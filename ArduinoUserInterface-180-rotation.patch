@@ -1,0 +1,135 @@
+# 180-degree display rotation patch for the ArduinoUserInterface library
+#
+# Why this exists: this build's Nokia 5110 is physically mounted upside down,
+# and the PCD8544 controller has no hardware mirror/rotate register (unlike
+# e.g. SSD1306's segment-remap + COM-scan-direction bits), so the rotation
+# has to be done in software - inside the library itself, not this sketch,
+# since it needs to rotate the library's own menu/slider/text rendering too,
+# not just this sketch's custom graph drawing. See README.md's "Required
+# manual patch" note for the full explanation.
+#
+# Arduino's Library Manager does NOT know about this patch and will silently
+# overwrite it if the ArduinoUserInterface library is ever reinstalled or
+# updated. If the display comes up upside down after that, reapply this
+# patch.
+#
+# To apply (from the installed library's src/ directory, e.g.
+# ~/Documents/Arduino/libraries/ArduinoUserInterface/src/ or this project's
+# configured sketchbook library path):
+#
+#   patch -p1 < /path/to/ArduinoUserInterface-180-rotation.patch
+#
+# Or apply by hand: find lcdSetCursorXY() and lcdWriteData() in
+# ArduinoUserInterface.cpp and make the same edits shown below.
+#
+# To remove (e.g. if the LCD is ever physically remounted right-side up):
+# revert both functions to a plain passthrough of column/lineNumber (no
+# LCD_LAST_COLUMN_X / LCD_HEIGHT_IN_LINES flip, no bit-reversal) and delete
+# the two lcdRotatedWriteColumnX/lcdRotatedWriteRowY shadow variables.
+
+--- a/ArduinoUserInterface.cpp
++++ b/ArduinoUserInterface.cpp
+@@ -1901,18 +1901,52 @@
+ 
+ 
+ 
++//
++// ---------------------------------------------------------------------------
++// SHED FAN CONTROLLER PATCH - rotate the physical display 180 degrees.
++//
++// The PCD8544 has no hardware mirror/rotate register (unlike e.g. SSD1306's
++// segment-remap + COM-scan-direction bits), so this LCD module - physically
++// mounted upside down relative to the wiring diagram - is corrected in
++// software instead.  lcdSetCursorXY() and lcdWriteData() are the only two
++// places that ever address the display (verified by grepping this file for
++// direct 0x80/0x40 command usage), so patching just these two makes EVERY
++// caller - this library's own menus/sliders/text and the sketch's custom
++// pixel drawing alike - come out correctly rotated, with no other call site
++// anywhere needing to know about the rotation.
+ //
++// lcdCursorColumnX/lcdCursorRowY keep meaning what the rest of this file
++// already assumes (the LOGICAL, un-rotated position - e.g. right-justified
++// text math depends on this).  Two new shadow variables below track the
++// LOGICAL position of the *next byte* lcdWriteData() will write, so it can
++// re-address the hardware to the correct rotated position before every
++// single byte - callers like lcdPrintCharacter() and lcdClearDisplay() write
++// many consecutive bytes relying on the PCD8544's own auto-increment, which
++// always advances the opposite way from what this rotation needs.
++//
++// To remove this patch (e.g. if the LCD is ever physically remounted the
++// right way up), revert lcdSetCursorXY()/lcdWriteData() to a plain passthrough
++// of column/lineNumber and delete the two shadow variables.
++// ---------------------------------------------------------------------------
++static int lcdRotatedWriteColumnX = 0;
++static int lcdRotatedWriteRowY = 0;
++
++
++//
+ // set the coords where the next character will be written to the LCD display
+ //  Enter:  column = pixel column (0 - 83, 0 = left most column)
+ //          lineNumber = character line (0 - 5, 0 = top row)
+ //
+ void ArduinoUserInterface::lcdSetCursorXY(int column, int lineNumber)
+ {
+-  lcdWriteCommand(0x80 | column);
+-  lcdWriteCommand(0x40 | lineNumber);
+-  
+-  lcdCursorColumnX = column;        // remember the LCD's cursor position
+-  lcdCursorRowY = lineNumber; 
++  lcdWriteCommand(0x80 | (LCD_LAST_COLUMN_X - column));
++  lcdWriteCommand(0x40 | ((LCD_HEIGHT_IN_LINES - 1) - lineNumber));
++
++  lcdCursorColumnX = column;        // remember the LCD's cursor position (logical)
++  lcdCursorRowY = lineNumber;
++
++  lcdRotatedWriteColumnX = column;  // logical position of the next lcdWriteData() byte
++  lcdRotatedWriteRowY = lineNumber;
+ }
+ 
+ 
+@@ -1946,12 +1980,44 @@
+ //
+ // write a single data byte to the LCD display
+ //
++// SHED FAN CONTROLLER PATCH (180 degree rotation - see the note above
++// lcdSetCursorXY()): explicitly re-addresses the hardware to this byte's
++// rotated physical position before every write (since callers write many
++// consecutive bytes relying on the PCD8544's own auto-increment, which
++// advances the wrong way for a rotated screen), and reverses the bit order
++// within the byte, since each bit is one of 8 vertically-stacked pixels that
++// a 180-degree rotation also flips top-to-bottom.
++//
+ void ArduinoUserInterface::lcdWriteData(byte data)
+ {
++  int physCol  = LCD_LAST_COLUMN_X - lcdRotatedWriteColumnX;
++  int physLine = (LCD_HEIGHT_IN_LINES - 1) - lcdRotatedWriteRowY;
++  lcdWriteCommand(0x80 | physCol);
++  lcdWriteCommand(0x40 | physLine);
++
++  byte reversed = 0;
++  for (byte bitCount = 0; bitCount < 8; bitCount++)
++  {
++    reversed <<= 1;
++    reversed |= (data & 0x01);
++    data >>= 1;
++  }
++
+   digitalWrite(lcdDataControlPin, LCD_DATA_BYTE);
+   digitalWrite(lcdChipEnablePin, LOW);
+-  lcdSerialOut(data);
++  lcdSerialOut(reversed);
+   digitalWrite(lcdChipEnablePin, HIGH);
++
++  //
++  // advance our shadow position exactly like the PCD8544's own hardware
++  // auto-increment would (column wraps to the next line after the last one)
++  //
++  lcdRotatedWriteColumnX++;
++  if (lcdRotatedWriteColumnX > LCD_LAST_COLUMN_X)
++  {
++    lcdRotatedWriteColumnX = 0;
++    lcdRotatedWriteRowY++;
++  }
+ }
+ 
+ 
