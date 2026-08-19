@@ -1,61 +1,30 @@
-//      ******************************************************************
-//      *                                                                *
-//      *   fans_controller.h  -  Fans Controller: the shed's PAIR-level  *
-//      *                     fan control law - drives fanLeft/fanRight   *
-//      *                     (fan_pid_control.h) toward the same target  *
-//      *                     together, and cross-checks their measured   *
-//      *                     RPM for a sustained mismatch fault.         *
-//      *                                                                 *
-//      *   Everything about ONE fan's own PID/autotune lives in           *
-//      *   fan_pid_control.h's FanPIDControl class (which references a    *
-//      *   fan.h Fan rather than deriving from it) - this file only       *
-//      *   holds what's genuinely about the pair: the shared RPM          *
-//      *   targets, the mismatch threshold, and orchestrating two Fan     *
-//      *   AND two FanPIDControl references (constructor-injected, same  *
-//      *   pattern as ControlLoop's Sensor/Battery/FansController         *
-//      *   dependencies). FansController talks to the Fan objects         *
-//      *   directly for raw duty/RPM (manual mode, kick-start, stop,      *
-//      *   mismatch check) and to the FanPIDControl objects only for      *
-//      *   the closed-loop auto path - see the note at the top of         *
-//      *   fan_pid_control.h for why there's no pass-through for the      *
-//      *   former on FanPIDControl itself.                                *
-//      *                                                                 *
-//      *   Doesn't init() the Fan/FanPIDControl objects it's given -      *
-//      *   fanLeft/fanRight init() themselves, directly in setup()        *
-//      *   (FanController.ino), before this class (or anything else)      *
-//      *   ever touches them.                                             *
-//      *                                                                 *
-//      *   Public interface (used by control_loop.h/FanController.ino):    *
-//      *     service()            - refresh both fans' measured RPM;     *
-//      *                            call once per control cycle, before  *
-//      *                            either Drive                         *
-//      *     driveAuto(rpm, v)    - PID toward a target RPM (0 = stop),  *
+//      ********************************************************************
+//      *                                                                  *
+//      *   fans_controller.h  -  Fans Controller: the shed's PAIR-level   *
+//      *                     fan control law - drives left and right fan  *
+//      *                                                                  *
+//      *                                                                  *
+//      *   Public interface (used by control_loop.h/FanController.ino):   *
+//      *     service()            - refresh both fans' measured RPM;      *
+//      *                            call once per control cycle, before   *
+//      *                            either Drive                          *
+//      *     driveAuto(rpm, v)    - PID toward a target RPM (0 = stop),   *
 //      *                            both fans, gains compensated for      *
 //      *                            live battery voltage v                *
 //      *     driveManual(pct, v)  - open-loop duty (0 = stop), both fans; *
 //      *                            v is only threaded through to the     *
 //      *                            mismatch check's stall judgment       *
 //      *                            (fans aren't PID-driven in this mode) *
-//      *     isCommandedOn()      - fans currently commanded on          *
-//      *     isMismatched()       - sustained left/right fault           *
+//      *     isCommandedOn()      - fans currently commanded on           *
+//      *     isMismatched()       - sustained left/right fault            *
 //      *     getSpeedLabel(buf, v) - human-readable speed label           *
-//      *     stopAll()            - stop + reset PID, both fans          *
-//      *     get/Low/Med/HighRpm(v) - the pair-level LOW/MED/HIGH RPM      *
+//      *     stopAll()            - stop + reset PID, both fans           *
+//      *     get/Low/Med/HighRpm(v) - the pair-level LOW/MED/HIGH RPM     *
 //      *                            targets, the lower of both fans' own  *
 //      *                            autotune-measured values at v         *
-//      *                            (fan_pid_control.h) - see below        *
-//      *                                                                 *
-//      *   Per-fan readouts (getRpm(), on the raw fanLeftHw/fanRightHw     *
-//      *   Fan objects - fan.h), per-fan PID gains (get/setKp/Ki/Kd(),     *
-//      *   on fanLeft/fanRight - fan_pid_control.h), and the autotune      *
-//      *   primitives (kickstart(), autotuneStep(), isStalled(),           *
-//      *   FanPIDControl::computeAutotunePID()) are called directly by     *
-//      *   FanController.ino - there's no per-side pass-through wrapper     *
-//      *   of any of those here, since duplicating those                   *
-//      *   interfaces per side is exactly the duplication this split       *
-//      *   removes.                                                       *
-//      *                                                                 *
-//      ******************************************************************
+//      *                            (fan_pid_control.h) - see below       *
+//      *                                                                  *
+//      ********************************************************************
 
 #ifndef FANS_CONTROLLER_H
 #define FANS_CONTROLLER_H
@@ -80,15 +49,6 @@
 // (fan wear, manufacturing variance, wiring resistance) is corrected
 // automatically rather than assuming identical fans.
 //
-// LOW/MED/HIGH aren't fixed constants here - see getLowRpm()/getMedRpm()/
-// getHighRpm() below: each is the *lower* of the two fans' own autotune-
-// measured RPM (at FAN_AUTOTUNE_LOW_PCT/HIGH_PCT/MAX_PCT respectively - see
-// fan_pid_control.h), so the pair-level target is always something *both*
-// fans can actually reach, not just the faster one. "Tune Left"/"Tune
-// Right" in the PID tuning menu measures these directly; until a fan's been
-// autotuned, its own values fall back to FAN_LOW_RPM_DEFAULT/
-// FAN_HIGH_RPM_DEFAULT/FAN_MAX_RPM_DEFAULT (fan_pid_control.h).
-//
 // Both fans are always *commanded* to the identical target RPM (never
 // separate per-fan targets - see driveAuto()), so under normal operation
 // their measured speeds converge to match each other, not just the
@@ -99,43 +59,38 @@
 // control cycles so a transient mismatch while the PID is still settling
 // after a target change (e.g. LOW -> HIGH) isn't reported as a fault.
 //
-const unsigned int FAN_RPM_MISMATCH_RPM = 300;
-const byte FAN_MISMATCH_DEBOUNCE_CYCLES = 3;   // 3 * CONTROL_INTERVAL = 6s sustained
+const unsigned int FAN_RPM_MISMATCH_RPM         = 300;
+const byte         FAN_MISMATCH_DEBOUNCE_CYCLES = 3; // 3 * CONTROL_INTERVAL = 6s sustained
 
 //
 // EEPROM layout - base offsets for each FanPIDControl instance's own
-// persisted PID gains (see fan_pid_control.h's PersistedGains and
+// persisted PID gains (see fan_pid_control.h's PersistedParams and
 // Module::loadState()/saveState()), as offsets from EEPROM_FAN_BASE_IDX
 // (config.h). Each block holds one struct of 4 floats (16 bytes: Kp/Ki/Kd +
 // the tuning-reference voltage) plus 4 unsigned ints (8 bytes: stallRpm/
 // lowRpm/highRpm/maxRpm - see fan_pid_control.h) plus Module's 1-byte
 // written-flag = 25 of 28 bytes used - nothing outside this file needs to
 // know these addresses. Spaced 28 apart (not a tight 25) for a little
-// headroom to grow PersistedGains later without needing to widen this
+// headroom to grow PersistedParams later without needing to widen this
 // block again.
 //
-const int EEPROM_FAN_LEFT_BASE_IDX  = EEPROM_FAN_BASE_IDX;        // PersistedGains (25 of 28 bytes)
-const int EEPROM_FAN_RIGHT_BASE_IDX = EEPROM_FAN_BASE_IDX + 28;   // PersistedGains (25 of 28 bytes)
+const int EEPROM_FAN_LEFT_BASE_IDX  = EEPROM_FAN_BASE_IDX;      // PersistedParams (25 of 28 bytes)
+const int EEPROM_FAN_RIGHT_BASE_IDX = EEPROM_FAN_BASE_IDX + 28; // PersistedParams (25 of 28 bytes)
 
+//
+// Compile-time guard against exactly the EEPROM overlap
+//
+static_assert(
+    sizeof(PersistedParams) + 1 <= (unsigned) (EEPROM_FAN_RIGHT_BASE_IDX - EEPROM_FAN_LEFT_BASE_IDX),
+    "PersistedParams (+ its 1-byte written-flag) no longer fits the EEPROM_FAN_LEFT/RIGHT_BASE_IDX spacing - widen it");
 
 class FansController : public Module
 {
 public:
-  //
-  // Enter:  leftFanRef/rightFanRef = each side's raw hardware (fan.h) -
-  //         FansController reaches these directly for manual-mode duty,
-  //         kick-start, stop, and mismatch-check RPM reads
-  //         leftPidRef/rightPidRef = each side's PID (fan_pid_control.h) -
-  //         FansController reaches these for the closed-loop auto path.
-  //         Both sides must already be init()'d by the caller (setup(),
-  //         in FanController.ino) before any other method here is used.
-  //
-  FansController(ArduinoUserInterface &uiRef, Fan &leftFanRef, Fan &rightFanRef,
-                 FanPIDControl &leftPidRef, FanPIDControl &rightPidRef)
-    : Module(uiRef), leftFan(leftFanRef), rightFan(rightFanRef),
-      leftPid(leftPidRef), rightPid(rightPidRef) {}
+  FansController(ArduinoUserInterface &uiRef, Fan &leftFanRef, Fan &rightFanRef, PIDFanControl &leftPidRef,
+                 PIDFanControl &rightPidRef)
+      : Module(uiRef), leftFan(leftFanRef), rightFan(rightFanRef), leftPid(leftPidRef), rightPid(rightPidRef) {}
 
-  //
   // refresh both fans' measured RPM. Call once per control cycle, before
   // driveAuto()/driveManual(), so they act on fresh RPM data.
   //
@@ -149,26 +104,17 @@ public:
   // independent PID so its *actual measured RPM* tracks targetRpm - see the
   // note above for why this is more precise than commanding duty open-loop.
   // Call once per control cycle, right after service() has fresh RPM data.
-  // batteryVoltage is this cycle's live battery reading, passed straight
-  // through to each FanPIDControl's runPid() so it can compensate its gains
-  // for the battery's actual voltage right now (see the note in
-  // fan_pid_control.h) - it isn't otherwise used here.
   //
   void driveAuto(unsigned int targetRpm, float batteryVoltage) {
-    fanTargetRpm = targetRpm;
+    fanTargetRpm    = targetRpm;
     lastDriveManual = false;
     if (fanTargetRpm == 0) {
-      //
-      // true stop - bypass the PID entirely and reset its state, so the next
-      // start (auto or manual) begins from a clean slate rather than picking
-      // up stale integral windup from before the fans stopped
-      //
       leftFan.setDuty(SPEED_OFF_PCT);
       rightFan.setDuty(SPEED_OFF_PCT);
       leftPid.resetPid();
       rightPid.resetPid();
       fanWasRunning = false;
-      commandedOn = false;
+      commandedOn   = false;
       updateMismatchCounter(batteryVoltage);
       return;
     }
@@ -183,7 +129,7 @@ public:
       rightPid.resetPid();
       fanWasRunning = true;
     }
-    const float dt = CONTROL_INTERVAL / 1000.0;   // seconds, for the I/D terms
+    const float dt = CONTROL_INTERVAL / 1000.0; // seconds, for the I/D terms
     leftPid.runPid(fanTargetRpm, dt, batteryVoltage);
     rightPid.runPid(fanTargetRpm, dt, batteryVoltage);
     commandedOn = true;
@@ -192,22 +138,12 @@ public:
 
   //
   // Manual/test mode: drive both fans directly to the requested duty
-  // percent, bypassing the PID entirely (this is for servicing/diagnostics -
-  // e.g. measuring the RPM a given duty produces, same measurement autotune
-  // itself now makes automatically - see getLowRpm()/getMedRpm()/
-  // getHighRpm() above). Kick-starts out of a standstill exactly
-  // as the PID path does. Call once per control cycle while in manual mode
-  // (see control_loop.h) - the PID is kept continuously reset so auto mode
-  // starts clean whenever it resumes. batteryVoltage isn't used to drive
-  // anything here (open-loop, no PID) - it's only threaded through to the
-  // mismatch check, so a stalled fan's calibrated threshold (see
-  // FanPIDControl::isStalled()) is judged at the right voltage even in
-  // manual mode.
-  //
+  // percent, bypassing the PID entirely (this is for servicing/diagnostics/
+  // fail-safe mode in case the sensor is not working)
   void driveManual(byte dutyPct, float batteryVoltage) {
-    fanTargetRpm = 0;
+    fanTargetRpm    = 0;
     lastDriveManual = true;
-    lastManualPct = dutyPct;
+    lastManualPct   = dutyPct;
     leftPid.resetPid();
     rightPid.resetPid();
     if (!fanWasRunning && dutyPct > SPEED_OFF_PCT && dutyPct < SPEED_HIGH_PCT) {
@@ -216,15 +152,19 @@ public:
     leftFan.setDuty(dutyPct);
     rightFan.setDuty(dutyPct);
     fanWasRunning = (dutyPct > SPEED_OFF_PCT);
-    commandedOn = (dutyPct > SPEED_OFF_PCT);
+    commandedOn   = (dutyPct > SPEED_OFF_PCT);
     updateMismatchCounter(batteryVoltage);
   }
 
   bool isCommandedOn() const {
-      return commandedOn;
+    return commandedOn;
   }
-  bool isMismatched() const  {
-      return mismatchCount >= FAN_MISMATCH_DEBOUNCE_CYCLES;
+
+  //
+  // sustained left/right RPM disagreement - see updateMismatchCounter()
+  //
+  bool isMismatched() const {
+    return mismatchCount >= FAN_MISMATCH_DEBOUNCE_CYCLES;
   }
 
   //
@@ -233,63 +173,47 @@ public:
   // measured RPM rather than a fixed constant.
   //
   unsigned int getLowRpm(float batteryVoltage) const {
-      return min(leftPid.getLowRpm(batteryVoltage), rightPid.getLowRpm(batteryVoltage));
+    return min(leftPid.getLowRpm(batteryVoltage), rightPid.getLowRpm(batteryVoltage));
   }
   unsigned int getMedRpm(float batteryVoltage) const {
-      return min(leftPid.getHighRpm(batteryVoltage), rightPid.getHighRpm(batteryVoltage));
+    return min(leftPid.getHighRpm(batteryVoltage), rightPid.getHighRpm(batteryVoltage));
   }
   unsigned int getHighRpm(float batteryVoltage) const {
-      return min(leftPid.getMaxRpm(batteryVoltage), rightPid.getMaxRpm(batteryVoltage));
+    return min(leftPid.getMaxRpm(batteryVoltage), rightPid.getMaxRpm(batteryVoltage));
   }
 
   //
-  // human-readable name for the current fan speed - entirely self-contained
-  // (no caller needs to pass manual-mode state back in). No trailing manual-
-  // mode "*" - see drawFanScreen() in FanController.ino. batteryVoltage is
-  // only needed to evaluate the LOW/MED/HIGH band edges above at their
-  // calibrated voltage - see getLowRpm()/getMedRpm()/getHighRpm().
-  //  Enter:  buf = at least 6 bytes, receives the label
-  //
+  // human-readable name for the current fan speed
   void getSpeedLabel(char *buf, float batteryVoltage) const {
-    //
-    // manual mode bypasses the PID entirely and has no RPM target, so show
-    // the literal commanded duty instead of forcing it into an OFF/LOW/MED/
-    // HIGH band that wouldn't mean anything here
-    //
     if (lastDriveManual) {
       sprintf(buf, "%d%%", lastManualPct);
       return;
     }
-    if (fanTargetRpm == 0) {
+
+    switch (classifySpeedBand(fanTargetRpm, batteryVoltage)) {
+      case SPEED_BAND_OFF:
         strcpy(buf, "OFF");
-        return;
-    }
-    unsigned int medRpm  = getMedRpm(batteryVoltage);
-    unsigned int highRpm = getHighRpm(batteryVoltage);
-    unsigned int lowRpm  = getLowRpm(batteryVoltage);
-    if (fanTargetRpm >= highRpm) {
-        strcpy(buf, "HIGH");
-        return;
-    }
-    if (fanTargetRpm >  medRpm)  {
-        strcpy(buf, "MED+");
-        return;
-    }   // between MED and HIGH (fallback only)
-    if (fanTargetRpm >= medRpm)  {
-        strcpy(buf, "MED");
-        return;
-    }
-    if (fanTargetRpm >  lowRpm)  {
+        break;
+      case SPEED_BAND_LOW:
+        strcpy(buf, "LOW");
+        break;
+      case SPEED_BAND_LOW_PLUS:
         strcpy(buf, "LOW+");
-        return;
-    }   // ramping through the quiet band
-    strcpy(buf, "LOW");
+        break;
+      case SPEED_BAND_MED:
+        strcpy(buf, "MED");
+        break;
+      case SPEED_BAND_MED_PLUS:
+        strcpy(buf, "MED+");
+        break;
+      case SPEED_BAND_HIGH:
+        strcpy(buf, "HIGH");
+        break;
+    }
   }
 
   //
-  // stop both fans and reset PID state - a clean, known baseline. Used
-  // before starting an autotune run (regardless of what was running before
-  // the menu was opened) and after it finishes.
+  // stop both fans and reset PID state
   //
   void stopAll() {
     leftFan.setDuty(SPEED_OFF_PCT);
@@ -297,22 +221,22 @@ public:
     leftPid.resetPid();
     rightPid.resetPid();
     fanWasRunning = false;
-    commandedOn = false;
+    commandedOn   = false;
   }
 
 private:
-  Fan &leftFan;
-  Fan &rightFan;
-  FanPIDControl &leftPid;
-  FanPIDControl &rightPid;
+  Fan           &leftFan;  // left fan's raw hardware (fan.h) - manual duty, kick-start, stop, RPM reads
+  Fan           &rightFan; // right fan's raw hardware (fan.h)
+  PIDFanControl &leftPid;  // left fan's PID (fan_pid_control.h) - closed-loop auto path
+  PIDFanControl &rightPid; // right fan's PID (fan_pid_control.h)
 
   //
   // current fan output and the control state machine
   //
-  unsigned int fanTargetRpm = 0; // last auto-path target RPM (0 = off, or manual is driving)
-  bool commandedOn = false;      // true whenever the fans are currently commanded to spin
-  bool fanWasRunning = false;    // for kick-start edge detection, shared by auto and manual
-  byte mismatchCount = 0;        // consecutive cycles the two fans' RPM has disagreed - see updateMismatchCounter()
+  unsigned int fanTargetRpm  = 0;     // last auto-path target RPM (0 = off, or manual is driving)
+  bool         commandedOn   = false; // true whenever the fans are currently commanded to spin
+  bool         fanWasRunning = false; // for kick-start edge detection, shared by auto and manual
+  byte         mismatchCount = 0; // consecutive cycles the two fans' RPM has disagreed - see updateMismatchCounter()
 
   //
   // what the last Drive call was, so getSpeedLabel()/updateMismatchCounter()
@@ -320,12 +244,45 @@ private:
   // manual mode?" back in)
   //
   bool lastDriveManual = false;
-  byte lastManualPct = 0;
+  byte lastManualPct   = 0;
+
+  enum SpeedBand
+  {
+    SPEED_BAND_OFF,
+    SPEED_BAND_LOW,
+    SPEED_BAND_LOW_PLUS,
+    SPEED_BAND_MED,
+    SPEED_BAND_MED_PLUS,
+    SPEED_BAND_HIGH
+  };
 
   //
-  // set both fans to full duty and wait once - unlike Fan::kickstart()
-  // (which pulses one fan alone, for autotune), driveAuto()/driveManual()
-  // need both fans pulsed *together*, so this doesn't reuse that method.
+  // classify a target RPM into the OFF/LOW/LOW+/MED/MED+/HIGH bands
+  //
+  SpeedBand classifySpeedBand(unsigned int targetRpm, float batteryVoltage) const {
+    if (targetRpm == 0) {
+      return SPEED_BAND_OFF;
+    }
+    unsigned int lowRpm  = getLowRpm(batteryVoltage);
+    unsigned int medRpm  = getMedRpm(batteryVoltage);
+    unsigned int highRpm = getHighRpm(batteryVoltage);
+    if (targetRpm >= highRpm) {
+      return SPEED_BAND_HIGH;
+    }
+    if (targetRpm > medRpm) {
+      return SPEED_BAND_MED_PLUS; // between MED and HIGH (fallback only)
+    }
+    if (targetRpm >= medRpm) {
+      return SPEED_BAND_MED;
+    }
+    if (targetRpm > lowRpm) {
+      return SPEED_BAND_LOW_PLUS; // ramping through the quiet band
+    }
+    return SPEED_BAND_LOW;
+  }
+
+  //
+  // set both fans to full duty and wait once
   //
   void kickstartBoth() {
     leftFan.setDuty(SPEED_HIGH_PCT);
@@ -347,14 +304,13 @@ private:
   // live voltage, the same way runPid() compensates the gains.
   //
   void updateMismatchCounter(float batteryVoltage) {
-    bool mismatchNow = !lastDriveManual && commandedOn &&
-                        !leftPid.isStalled(leftFan.getRpm(), batteryVoltage) &&
-                        !rightPid.isStalled(rightFan.getRpm(), batteryVoltage) &&
-                        (abs((int) leftFan.getRpm() - (int) rightFan.getRpm()) > (int) FAN_RPM_MISMATCH_RPM);
+    bool mismatchNow = !lastDriveManual && commandedOn && !leftPid.isStalled(leftFan.getRpm(), batteryVoltage) &&
+                       !rightPid.isStalled(rightFan.getRpm(), batteryVoltage) &&
+                       (abs((int) leftFan.getRpm() - (int) rightFan.getRpm()) > (int) FAN_RPM_MISMATCH_RPM);
 
     if (mismatchNow) {
       if (mismatchCount < 255) {
-          mismatchCount++;
+        mismatchCount++;
       }
     } else {
       mismatchCount = 0;
@@ -362,8 +318,8 @@ private:
   }
 };
 
-extern FanPIDControl fanLeft;    // defined in the main sketch
-extern FanPIDControl fanRight;   // defined in the main sketch
-extern FansController fanControl;   // defined in the main sketch
+extern PIDFanControl  PidFanLeft;    // defined in the main sketch
+extern PIDFanControl  PidFanRight;   // defined in the main sketch
+extern FansController fanControl; // defined in the main sketch
 
-#endif  // FANS_CONTROLLER_H
+#endif // FANS_CONTROLLER_H

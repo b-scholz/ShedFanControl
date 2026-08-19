@@ -1,80 +1,44 @@
-//      ******************************************************************
-//      *                                                                *
-//      *   fan_pid_control.h  -  FanPIDControl: closed-loop RPM control  *
-//      *             on top of a Fan (fan.h) it holds by reference - a   *
-//      *             PID loop and its gains, and autotune primitives,    *
-//      *             built on that Fan's own read()/getRpm()/setDuty().  *
-//      *                                                                 *
-//      *   Composition, not inheritance: a FanPIDControl doesn't have    *
-//      *   its own PWM/tach hardware, it drives someone else's Fan       *
-//      *   through the reference passed to its constructor - the caller  *
-//      *   constructs and owns the Fan, and could in principle drive it   *
-//      *   open-loop directly instead, or use it for something else.     *
-//      *                                                                 *
-//      *   Deliberately does NOT re-expose read()/getRpm()/setDuty()/     *
-//      *   kickstart() as forwarding pass-throughs to the Fan it holds -   *
-//      *   that would just be Fan's own interface duplicated under a       *
-//      *   different name. Callers that need raw hardware access           *
-//      *   (FansController's manual-mode duty, kick-start, stop, and        *
-//      *   mismatch-check RPM reads - see fans_controller.h;                 *
-//      *   FanController.ino's                                              *
-//      *   autotune kick-start) hold their own Fan& and call it directly   *
-//      *   instead of routing through this class. isStalled() is the one   *
-//      *   exception - it lives HERE, not on Fan, because "stalled" is a   *
-//      *   judgment against this fan's own calibrated threshold (measured  *
-//      *   by autotune, voltage-compensated the same way the PID gains     *
-//      *   are), not a fact Fan could know on its own.                     *
-//      *                                                                 *
-//      *   Instantiated TWICE (fanLeft/fanRight, in FanController.ino) - *
-//      *   every piece of per-fan state (which Fan it drives, which      *
-//      *   EEPROM offset its gains persist to, its own PID integrator/   *
-//      *   gains) is either a constructor parameter or a private member, *
-//      *   so the two instances never share state by accident - there   *
-//      *   is no Left/Right-suffixed duplication left anywhere here.     *
-//      *                                                                 *
+//      **********************************************************************
+//      *                                                                    *
+//      *   fan_pid_control.h  -  FanPIDControl: closed-loop RPM control     *
+//      *             using a PID loop.                                      *
+//      *                                                                    *
 //      *   Public interface (used by fans_controller.h/FanController.ino):  *
-//      *     init()               - the underlying Fan's pin/timer/ISR   *
-//      *                            setup, plus loading saved gains       *
-//      *     runPid(rpm, dt, v)   - one closed-loop PID step -> duty,     *
-//      *                            applied via the Fan's setDuty();      *
-//      *                            gains scaled for live voltage v       *
-//      *     resetPid()           - clear the integrator/last-error      *
-//      *     get/setKp/Ki/Kd(v)   - persisted PID gains; each setter      *
-//      *                            takes the live battery voltage v      *
-//      *                            (records it as the new tuning         *
-//      *                            reference) and saves immediately,     *
-//      *                            via Module's struct-based EEPROM      *
-//      *                            helpers                                *
-//      *     getTuningVoltage()   - voltage the current gains were last   *
-//      *                            set at                                *
-//      *     autotuneStep(pct)    - drive at pct, settle, return RPM     *
-//      *     applyAutotuneResults(kp, ki, kd, stallRpm, lowRpm, highRpm,  *
-//      *                          maxRpm, v) - one save of everything one *
-//      *                          "Tune Left"/"Tune Right" run measured    *
-//      *     get/isStalled(rpm, v) - this fan's own measured stall RPM,   *
-//      *                          scaled by v/tuningVoltage the same way  *
-//      *                          runPid() scales the gains (PWM-to-RPM   *
-//      *                          scales with voltage too) - NOT a fixed  *
-//      *                          constant, since it's calibrated per      *
-//      *                          fan by autotune, same as Kp/Ki/Kd        *
+//      *     init()               - the underlying Fan's pin/timer/ISR      *
+//      *                            setup, plus loading saved gains         *
+//      *     runPid(rpm, dt, v)   - one closed-loop PID step -> duty,       *
+//      *                            applied via the Fan's setDuty();        *
+//      *                            gains scaled for live voltage v         *
+//      *     resetPid()           - clear the integrator/last-error         *
+//      *     get/setKp/Ki/Kd(v)   - persisted PID gains; each setter        *
+//      *                            takes the live battery voltage v        *
+//      *                            (records it as the new tuning           *
+//      *                            reference) and saves immediately,       *
+//      *                            via Module's struct-based EEPROM        *
+//      *                            helpers                                 *
+//      *     getTuningVoltage()   - voltage the current gains were last     *
+//      *                            set at                                  *
+//      *     autotuneStep(pct)    - drive at pct, settle, return RPM        *
+//      *     applyAutotuneResults(const AutotuneResult&) - one save of      *
+//      *                          everything one "Tune Left"/"Tune Right"   *
+//      *                          run measured                              *
+//      *     get/isStalled(rpm, v) - this fan's own measured stall RPM,     *
+//      *                          scaled by v/tuningVoltage the same way    *
+//      *                          runPid() scales the gains (PWM-to-RPM     *
+//      *                          scales with voltage too) - NOT a fixed    *
+//      *                          constant, since it's calibrated per       *
+//      *                          fan by autotune, same as Kp/Ki/Kd         *
 //      *     getLowRpm(v)/getHighRpm(v)/getMaxRpm(v) - this fan's own       *
-//      *                          measured RPM at the LOW/HIGH/MAX autotune*
+//      *                          measured RPM at the LOW/HIGH/MAX autotune *
 //      *                          duty points, scaled by v/tuningVoltage    *
-//      *                          the same way isStalled() scales stallRpm;*
-//      *                          fans_controller.h combines both fans'    *
-//      *                          values into the pair-level LOW/MED/HIGH  *
-//      *                          targets these replace as fixed constants *
-//      *     static computeAutotunePID(...) - pure math, no instance      *
-//      *                          state needed                            *
-//      *                                                                 *
-//      *   No ui.*/LCD code and no menu commands live here - the         *
-//      *   autotune *sequence* (what order to test duties in, what to    *
-//      *   show on screen) lives in FanController.ino, calling only the     *
-//      *   primitives above; FansController (fans_controller.h) sequences *
-//      *   the two FanPIDControl instances together for the normal        *
-//      *   closed-loop control law and cross-fan fault detection.          *
-//      *                                                                 *
-//      ******************************************************************
+//      *                          the same way isStalled() scales stallRpm; *
+//      *                          fans_controller.h combines both fans'     *
+//      *                          values into the pair-level LOW/MED/HIGH   *
+//      *                          targets                                   *
+//      *     static computeAutotunePID(...) - pure math, no instance        *
+//      *                          state needed                              *
+//      *                                                                    *
+//      **********************************************************************
 
 #ifndef FAN_PID_CONTROL_H
 #define FAN_PID_CONTROL_H
@@ -86,13 +50,8 @@
 #include "fan.h"
 
 //
-// The automatic control law targets a specific RPM, not a PWM duty directly -
-// a PID loop (see runPid() below) reads the fan's real tachometer speed and
-// adjusts its PWM duty to hit that target. This is more precise than
-// commanding duty open-loop: PWM-to-RPM is a nonlinear, fan- and voltage-
-// specific curve (two "identical" fans can spin at noticeably different RPM
-// for the same duty), so open-loop duty control means "LOW" might be a
-// different actual airflow on each fan, or drift over time as bearings wear.
+// The automatic control law targets a specific RPM, a PID loop reads the
+// fan's real tachometer speed and adjusts its PWM duty to hit that target.
 //
 
 //
@@ -162,19 +121,18 @@ const float FAN_PID_KD_STEP = 0.001;
 // at 100% duty, at the voltage the run was calibrated at (see
 // applyAutotuneResults() below).
 //
-const byte FAN_AUTOTUNE_LOW_PCT  = 40;
-const byte FAN_AUTOTUNE_HIGH_PCT = 90;
-const byte FAN_AUTOTUNE_MAX_PCT  = 100;
-const byte FAN_AUTOTUNE_SETTLE_CYCLES = 4;   // 4 * CONTROL_INTERVAL = 8s per step
+const byte FAN_AUTOTUNE_LOW_PCT       = 40;
+const byte FAN_AUTOTUNE_HIGH_PCT      = 90;
+const byte FAN_AUTOTUNE_MAX_PCT       = 100;
+const byte FAN_AUTOTUNE_SETTLE_CYCLES = 4; // 4 * CONTROL_INTERVAL = 8s per step
 
 //
 // Power-up defaults for getLowRpm()/getHighRpm()/getMaxRpm() below, before
 // this fan has ever been autotuned - same role as FAN_PID_KP/KI/KD above,
-// just for RPM instead of gains. fans_controller.h's FansController combines both
-// fans' values into the pair-level LOW/MED/HIGH RPM targets that used to be
-// fixed FAN_LOW_RPM/FAN_MED_RPM/FAN_HIGH_RPM constants there - these three
-// numbers match those old defaults exactly, so an un-autotuned pair of fans
-// behaves the same as before until you run "Tune Left"/"Tune Right".
+// just for RPM instead of gains. fans_controller.h's FansController combines
+// both fans' values into the pair-level LOW/MED/HIGH RPM targets, so an
+// un-autotuned pair of fans still gets sensible LOW/MED/HIGH targets until
+// you run "Tune Left"/"Tune Right".
 //
 const unsigned int FAN_LOW_RPM_DEFAULT  = 600;
 const unsigned int FAN_HIGH_RPM_DEFAULT = 1200;
@@ -189,11 +147,11 @@ const unsigned int FAN_MAX_RPM_DEFAULT  = 2000;
 // compensates by scaling the stored gains by tuningVoltage / (the live
 // battery voltage), where tuningVoltage is the voltage recorded at the
 // moment those gains were last set (see setKp()/setKi()/setKd() and
-// PersistedGains::tuningVoltage below). FAN_GAIN_TUNING_VOLTAGE_DEFAULT is
+// PersistedParams::tuningVoltage below). FAN_GAIN_TUNING_VOLTAGE_DEFAULT is
 // only the assumed reference for the untuned power-up default gains, before
 // any real measurement exists.
 //
-const float FAN_GAIN_TUNING_VOLTAGE_DEFAULT = 12.6;   // nominal 12V SLA resting voltage
+const float FAN_GAIN_TUNING_VOLTAGE_DEFAULT = 12.6; // nominal 12V SLA resting voltage
 
 //
 // Clamp on the voltage-compensation scale factor itself (tuningVoltage /
@@ -206,6 +164,24 @@ const float FAN_VOLTAGE_SCALE_MIN = 0.5;
 const float FAN_VOLTAGE_SCALE_MAX = 2.0;
 
 //
+// everything one "Tune Left"/"Tune Right" run measures, bundled so
+// applyAutotuneResults() below takes one clearly-named argument instead of
+// eight positional floats/ints that are easy to transpose by mistake at
+// the call site (FanController.ino's autotuneFan()).
+//
+struct AutotuneResult
+{
+  float        kp;
+  float        ki;
+  float        kd;
+  unsigned int stallRpm;
+  unsigned int lowRpm;
+  unsigned int highRpm;
+  unsigned int maxRpm;
+  float        tuningVoltage;
+};
+
+//
 // this fan's entire persisted state - see Module::loadState()/
 // saveState(). Default member initializers double as the power-up
 // defaults for a never-written EEPROM offset. stallRpm/lowRpm/highRpm/
@@ -213,19 +189,19 @@ const float FAN_VOLTAGE_SCALE_MAX = 2.0;
 // "Tune Right" run - see isStalled()/getLowRpm()/getHighRpm()/getMaxRpm()
 // and applyAutotuneResults() below.
 //
-struct PersistedParams {
-  float kp = FAN_PID_KP;
-  float ki = FAN_PID_KI;
-  float kd = FAN_PID_KD;
-  float tuningVoltage = FAN_GAIN_TUNING_VOLTAGE_DEFAULT;
-  unsigned int stallRpm = 0;
-  unsigned int lowRpm = 0;
-  unsigned int highRpm = 0;
-  unsigned int maxRpm = 0;
+struct PersistedParams
+{
+  float        kp            = FAN_PID_KP;
+  float        ki            = FAN_PID_KI;
+  float        kd            = FAN_PID_KD;
+  float        tuningVoltage = FAN_GAIN_TUNING_VOLTAGE_DEFAULT;
+  unsigned int stallRpm      = 0;
+  unsigned int lowRpm        = 0;
+  unsigned int highRpm       = 0;
+  unsigned int maxRpm        = 0;
 };
 
-
-class FanPIDControl : public Module
+class PIDFanControl : public Module
 {
 public:
   //
@@ -236,26 +212,22 @@ public:
   //                           (see Module::loadState()/saveState()) - must
   //                           be different for each FanPIDControl instance
   //
-  FanPIDControl(ArduinoUserInterface &uiRef, Fan &fanRef, int eepromBaseIdxIn)
-    : Module(uiRef), fan(fanRef), eepromBaseIdx(eepromBaseIdxIn) {}
+  PIDFanControl(ArduinoUserInterface &uiRef, Fan &fanRef, int eepromBaseIdxIn)
+      : Module(uiRef), fan(fanRef), eepromBaseIdx(eepromBaseIdxIn) {}
 
-  //
-  // the underlying Fan's hardware bring-up (pins/timer/tach ISR), plus
-  // loading this fan's saved PID gains.
-  //
   void init() {
     fan.init();
 
     PersistedParams gains;
     loadState(eepromBaseIdx, gains);
-    pidKp = gains.kp;
-    pidKi = gains.ki;
-    pidKd = gains.kd;
+    pidKp         = gains.kp;
+    pidKi         = gains.ki;
+    pidKd         = gains.kd;
     tuningVoltage = gains.tuningVoltage;
-    stallRpm = gains.stallRpm;
-    lowRpm = gains.lowRpm;
-    highRpm = gains.highRpm;
-    maxRpm = gains.maxRpm;
+    stallRpm      = gains.stallRpm;
+    lowRpm        = gains.lowRpm;
+    highRpm       = gains.highRpm;
+    maxRpm        = gains.maxRpm;
   }
 
   //
@@ -264,7 +236,7 @@ public:
   // into a new run.
   //
   void resetPid() {
-    pidIntegral = 0;
+    pidIntegral  = 0;
     pidLastError = 0;
   }
 
@@ -291,14 +263,14 @@ public:
     float ki = pidKi * voltageScale;
     float kd = pidKd * voltageScale;
 
-    float error = (float) targetRpm - (float) fan.getRpm();
+    float error      = (float) targetRpm - (float) fan.getRpm();
     float derivative = (error - pidLastError) / dt;
 
     float candidateIntegral = pidIntegral + error * dt;
-    float output = kp * error + ki * candidateIntegral + kd * derivative;
+    float output            = kp * error + ki * candidateIntegral + kd * derivative;
 
     if (output >= 0.0 && output <= 100.0) {
-      pidIntegral = candidateIntegral;   // safe to accept - not saturating
+      pidIntegral = candidateIntegral; // safe to accept - not saturating
     }
 
     pidLastError = error;
@@ -308,60 +280,47 @@ public:
   }
 
   //
-  // per-fan PID gain getters/setters - each setter applies immediately and
-  // persists to EEPROM on its own (as one struct, via Module's helpers), so
-  // FanController.ino's sliders never need to touch the gain fields directly.
-  // Every setter also takes the live battery voltage at the moment the gain
-  // was set, and records it as the new tuningVoltage - see the note on
-  // runPid() above. Whichever of Kp/Ki/Kd you touch, tuningVoltage moves to
-  // "now": all three are only ever meaningful together, at one voltage.
-  //
+  // getters and setters; values of setters are persisted in EEPROM
   float getKp() const {
-      return pidKp;
+    return pidKp;
   }
   float getKi() const {
-      return pidKi;
+    return pidKi;
   }
   float getKd() const {
-      return pidKd;
+    return pidKd;
   }
   float getTuningVoltage() const {
-      return tuningVoltage;
+    return tuningVoltage;
   }
 
   void setKp(float kp, float voltageNow) {
-      pidKp = kp;
-      tuningVoltage = voltageNow;
-      savePersistedParams();
+    pidKp         = kp;
+    tuningVoltage = voltageNow;
+    savePersistedParams();
   }
 
   void setKi(float ki, float voltageNow) {
-      pidKi = ki;
-      tuningVoltage = voltageNow;
-      savePersistedParams();
+    pidKi         = ki;
+    tuningVoltage = voltageNow;
+    savePersistedParams();
   }
 
   void setKd(float kd, float voltageNow) {
-      pidKd = kd;
-      tuningVoltage = voltageNow;
-      savePersistedParams();
+    pidKd         = kd;
+    tuningVoltage = voltageNow;
+    savePersistedParams();
   }
 
   //
   // is rpmValue below this fan's own measured stall RPM? stallRpm was
   // measured at tuningVoltage (same calibration run as Kp/Ki/Kd - see
   // applyAutotuneResults() below), so - like runPid() - the stored value is
-  // scaled by batteryVoltage/tuningVoltage before comparing, since PWM-to-
-  // RPM scales roughly with supply voltage the same way the PID gains do.
-  // Before the first "Tune Left"/"Tune Right" run, stallRpm is 0 (never
-  // calibrated) and this always returns false rather than guessing - unlike
-  // getLowRpm()/getHighRpm()/getMaxRpm() below, there's no safe non-zero
-  // default for a stall threshold, so "never flags" is the conservative
-  // choice until real data exists.
+  // scaled by batteryVoltage/tuningVoltage.
   //
   bool isStalled(unsigned int rpmValue, float batteryVoltage) const {
     if (stallRpm == 0) {
-        return false;
+      return false;
     }
     return rpmValue < calibratedRpm(stallRpm, batteryVoltage);
   }
@@ -370,50 +329,32 @@ public:
   // this fan's own measured RPM at the LOW/HIGH/MAX autotune duty points
   // (FAN_AUTOTUNE_LOW_PCT/HIGH_PCT/MAX_PCT), scaled by
   // batteryVoltage/tuningVoltage the same way isStalled() scales stallRpm.
-  // Falls back to FAN_LOW_RPM_DEFAULT/FAN_HIGH_RPM_DEFAULT/
-  // FAN_MAX_RPM_DEFAULT (unscaled) before this fan has ever been autotuned -
-  // unlike isStalled(), a target-RPM source can't just go silent when
-  // uncalibrated, or the fans would never spin up in auto mode at all.
   //
   unsigned int getLowRpm(float batteryVoltage) const {
-      return lowRpm == 0 ? FAN_LOW_RPM_DEFAULT : calibratedRpm(lowRpm, batteryVoltage);
+    return lowRpm == 0 ? FAN_LOW_RPM_DEFAULT : calibratedRpm(lowRpm, batteryVoltage);
   }
   unsigned int getHighRpm(float batteryVoltage) const {
-      return highRpm == 0 ? FAN_HIGH_RPM_DEFAULT : calibratedRpm(highRpm, batteryVoltage);
+    return highRpm == 0 ? FAN_HIGH_RPM_DEFAULT : calibratedRpm(highRpm, batteryVoltage);
   }
   unsigned int getMaxRpm(float batteryVoltage) const {
-      return maxRpm == 0 ? FAN_MAX_RPM_DEFAULT : calibratedRpm(maxRpm, batteryVoltage);
+    return maxRpm == 0 ? FAN_MAX_RPM_DEFAULT : calibratedRpm(maxRpm, batteryVoltage);
   }
 
-  //
-  // one save of everything a "Tune Left"/"Tune Right" run measured - gains,
-  // the fan's own stall RPM, its RPM at the LOW/HIGH/MAX autotune duty
-  // points, and the live voltage they were all measured at - as a single
-  // EEPROM write, rather than the three separate writes calling
-  // setKp()/setKi()/setKd() individually would do.
-  //
-  void applyAutotuneResults(float kp, float ki, float kd, unsigned int stallRpmIn,
-                             unsigned int lowRpmIn, unsigned int highRpmIn,
-                             unsigned int maxRpmIn, float voltageNow) {
-    pidKp = kp;
-    pidKi = ki;
-    pidKd = kd;
-    stallRpm = stallRpmIn;
-    lowRpm = lowRpmIn;
-    highRpm = highRpmIn;
-    maxRpm = maxRpmIn;
-    tuningVoltage = voltageNow;
+  void applyAutotuneResults(const AutotuneResult &result) {
+    pidKp         = result.kp;
+    pidKi         = result.ki;
+    pidKd         = result.kd;
+    stallRpm      = result.stallRpm;
+    lowRpm        = result.lowRpm;
+    highRpm       = result.highRpm;
+    maxRpm        = result.maxRpm;
+    tuningVoltage = result.tuningVoltage;
     savePersistedParams();
   }
-
 
   // -------------------------------------------------------------------------------
   //                           Auto-tune primitives
   // -------------------------------------------------------------------------------
-  //
-  // Pure fan-hardware building blocks - no LCD/menu code. FanController.ino's
-  // autotuneFan() sequences these (which duties to test, in what order, what
-  // to show on screen); this class only knows how to drive/measure/compute.
   //
 
   //
@@ -430,7 +371,7 @@ public:
       delay(CONTROL_INTERVAL);
       fan.read();
       rpmPrev = rpmNow;
-      rpmNow = fan.getRpm();
+      rpmNow  = fan.getRpm();
     }
     return (unsigned int) (((unsigned long) rpmNow + rpmPrev) / 2);
   }
@@ -448,16 +389,15 @@ public:
   // lower/higher test duty. Pure math, the same for every fan, so it needs
   // no instance state either.
   //
-  static bool computeAutotunePID(unsigned int stallRpm, unsigned int rpmLow, unsigned int rpmHigh,
-                                  float &outKp, float &outKi, float &outKd)
-  {
+  static bool computeAutotunePID(unsigned int stallRpm, unsigned int rpmLow, unsigned int rpmHigh, float &outKp,
+                                 float &outKi, float &outKd) {
     if (rpmLow <= stallRpm || rpmHigh <= rpmLow + 10) {
-        return false;
+      return false;
     }
 
-    float processGain = (float)(rpmHigh - rpmLow) /
-                         (float)(FAN_AUTOTUNE_HIGH_PCT - FAN_AUTOTUNE_LOW_PCT);   // RPM per % duty
-    float timeConstant = CONTROL_INTERVAL / 1000.0;                          // seconds
+    float processGain =
+        (float) (rpmHigh - rpmLow) / (float) (FAN_AUTOTUNE_HIGH_PCT - FAN_AUTOTUNE_LOW_PCT); // RPM per % duty
+    float timeConstant = CONTROL_INTERVAL / 1000.0;                                          // seconds
 
     outKp = 1.0 / processGain;
     outKi = outKp / timeConstant;
@@ -467,37 +407,30 @@ public:
 
 private:
   //
-  // the Fan this PID drives - referenced, not owned; whichever code
-  // constructs fanLeft/fanRight (FanController.ino) constructs and owns the
-  // underlying Fan objects too.
+  // the Fan this PID drives
   //
   Fan &fan;
 
   //
   // wiring/identity - fixed for this instance's lifetime, passed in by
-  // whichever code constructs fanLeft/fanRight (fan_control.h)
+  // whichever code constructs fanLeft/fanRight (fans_controller.h)
   //
   const int eepromBaseIdx;
 
   //
-  // this fan's PID state and gains - independent per instance, so a
-  // left/right RPM mismatch is corrected automatically. Gains default to
-  // FAN_PID_KP/KI/KD above until either hand-tuned via the "PID tuning"
-  // menu or set by autotune, at which point they're persisted to EEPROM
-  // (loaded back in init()).
+  // this fan's PID state and gains - independent per instance.
+  // Gains default to FAN_PID_KP/KI/KD above until either hand-tuned via
+  // the "PID tuning" menu or set by autotune, at which point they're
+  // persisted to EEPROM (loaded back in init()).
   //
-  float pidKp = FAN_PID_KP,
-        pidKi = FAN_PID_KI,
-        pidKd = FAN_PID_KD;
-  float pidIntegral = 0;
+  float pidKp = FAN_PID_KP, pidKi = FAN_PID_KI, pidKd = FAN_PID_KD;
+  float pidIntegral  = 0;
   float pidLastError = 0;
 
   //
   // the battery voltage pidKp/Ki/Kd are only correct at - see the note on
   // FAN_GAIN_TUNING_VOLTAGE_DEFAULT and runPid() above. Updated by every
-  // setKp()/setKi()/setKd()/applyAutotuneResults() call; loaded back in
-  // init(). Also the calibration reference for stallRpm/maxRpm below -
-  // see isStalled().
+  // setKp()/setKi()/setKd()/applyAutotuneResults() call
   //
   float tuningVoltage = FAN_GAIN_TUNING_VOLTAGE_DEFAULT;
 
@@ -508,9 +441,9 @@ private:
   // above. 0 = never calibrated.
   //
   unsigned int stallRpm = 0;
-  unsigned int lowRpm = 0;
-  unsigned int highRpm = 0;
-  unsigned int maxRpm = 0;
+  unsigned int lowRpm   = 0;
+  unsigned int highRpm  = 0;
+  unsigned int maxRpm   = 0;
 
   //
   // scale a stored RPM (measured at tuningVoltage) to what it should be at
@@ -529,16 +462,16 @@ private:
 
   void savePersistedParams() {
     PersistedParams params;
-    params.kp = pidKp;
-    params.ki = pidKi;
-    params.kd = pidKd;
+    params.kp            = pidKp;
+    params.ki            = pidKi;
+    params.kd            = pidKd;
     params.tuningVoltage = tuningVoltage;
-    params.stallRpm = stallRpm;
-    params.lowRpm = lowRpm;
-    params.highRpm = highRpm;
-    params.maxRpm = maxRpm;
+    params.stallRpm      = stallRpm;
+    params.lowRpm        = lowRpm;
+    params.highRpm       = highRpm;
+    params.maxRpm        = maxRpm;
     saveState(eepromBaseIdx, params);
   }
 };
 
-#endif  // FAN_PID_CONTROL_H
+#endif // FAN_PID_CONTROL_H

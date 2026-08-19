@@ -36,13 +36,11 @@
 #include "battery_charge.h"
 #include "control_loop.h"
 
-extern ArduinoUserInterface ui;   // defined in the main sketch
+extern ArduinoUserInterface ui; // defined in the main sketch
 
 //
 // Smoothing window (simple moving average, symmetric) applied before
-// plotting, on top of - not a substitute for - the bucket averaging each
-// point already represents.  Fixed since there's only one time scale now.
-//
+// plotting, on top of historial data points.
 const uint8_t GRAPH_SMOOTH_WINDOW = 3;
 
 //
@@ -58,8 +56,8 @@ const int PLOT_HEIGHT      = (PLOT_BOTTOM_BANK - PLOT_TOP_BANK + 1) * 8; // 24
 const int PLOT_BOTTOM_ROW  = PLOT_TOP_ROW + PLOT_HEIGHT - 1;             // 31
 const int X_AXIS_BANK      = PLOT_BOTTOM_BANK + 1;                       // 4
 
-const int PLOT_LEFT_X  = 28;                  // room for a 4-char label (e.g. battery "12.6") + margin
-const int PLOT_RIGHT_X = LCD_LAST_COLUMN_X;   // 83
+const int PLOT_LEFT_X  = 28;                // room for a 4-char label (e.g. battery "12.6") + margin
+const int PLOT_RIGHT_X = LCD_LAST_COLUMN_X; // 83
 const int PLOT_WIDTH   = PLOT_RIGHT_X - PLOT_LEFT_X + 1;
 
 //
@@ -76,9 +74,13 @@ static uint8_t graphSmoothBuf[HISTORY_POINTS];
 // plotted-value transform - free functions so they can be passed as Graph
 // constructor arguments (see the four instances below).
 //
-void graphFormatPlain(uint8_t value, char *buf) { sprintf(buf, "%d", value); }
+void graphFormatPlain(uint8_t value, char *buf) {
+  sprintf(buf, "%d", value);
+}
 
-void graphFormatVolts(uint8_t value, char *buf) { sprintf(buf, "%d.%d", value / 10, value % 10); }
+void graphFormatVolts(uint8_t value, char *buf) {
+  sprintf(buf, "%d.%d", value / 10, value % 10);
+}
 
 //
 // History stores battery voltage as tenths-of-a-volt; the charge graph
@@ -92,8 +94,32 @@ uint8_t graphChargeFromVoltsTenths(uint8_t voltsTenths) {
   return batteryCharge.percentFromVoltage(voltsTenths / 10.0);
 }
 
+//
+// set the pixels for one column's vertical run [rowTop..rowBottom]
+// (inclusive, absolute LCD rows), across however many of the 4 plot banks
+// it touches. A free function (not a Graph member) since it only needs the
+// PLOT_* geometry above and the global ui - FanController.ino's charge-curve
+// menu screen reuses it directly for a plot that isn't a History at all.
+//
+void graphPlotColumn(int x, int rowTop, int rowBottom) {
+  for (int bank = PLOT_TOP_BANK; bank <= PLOT_BOTTOM_BANK; bank++) {
+    int bankTop    = bank * 8;
+    int bankBottom = bankTop + 7;
+    if (rowBottom < bankTop || rowTop > bankBottom) {
+      continue; // this bank untouched - stays blank
+    }
+    int  loRow   = max(rowTop, bankTop);
+    int  hiRow   = min(rowBottom, bankBottom);
+    byte pattern = 0;
+    for (int r = loRow; r <= hiRow; r++) {
+      pattern |= (byte) (1 << (r - bankTop));
+    }
+    ui.lcdDrawRowOfPixels(x, x, bank, pattern);
+  }
+}
 
-class Graph {
+class Graph
+{
 public:
   typedef void (*LabelFormatter)(uint8_t value, char *buf);
   typedef uint8_t (*ValueTransform)(uint8_t raw);
@@ -108,7 +134,7 @@ public:
   //                      byte directly" (temp/humidity/battery all do this)
   //
   Graph(const char *titleIn, LabelFormatter formatterIn, ValueTransform transformIn = nullptr)
-    : title(titleIn), formatter(formatterIn), transform(transformIn) {}
+      : title(titleIn), formatter(formatterIn), transform(transformIn) {}
 
   //
   // draw this graph's content (header, axes, plot) for the given history,
@@ -116,8 +142,7 @@ public:
   // the main-screen dispatch in FanController.ino. hist is the only thing that
   // varies per call; title/formatter/transform were fixed at construction.
   //
-  void draw(const History &hist) const
-  {
+  void draw(const History &hist) const {
     uint8_t count = hist.count();
 
     ui.lcdSetCursorXY(0, 0);
@@ -132,11 +157,11 @@ public:
     //
     // gather the raw series (through the transform, if any), then smooth it
     //
-    uint8_t *raw = graphRawBuf;
+    uint8_t *raw      = graphRawBuf;
     uint8_t *smoothed = graphSmoothBuf;
     for (uint8_t i = 0; i < count; i++) {
       uint8_t v = hist.get(i);
-      raw[i] = transform ? transform(v) : v;
+      raw[i]    = transform ? transform(v) : v;
     }
     graphSmooth(raw, count, GRAPH_SMOOTH_WINDOW, smoothed);
 
@@ -145,11 +170,15 @@ public:
     //
     uint8_t vMin = smoothed[0], vMax = smoothed[0];
     for (uint8_t i = 1; i < count; i++) {
-      if (smoothed[i] < vMin) { vMin = smoothed[i]; }
-      if (smoothed[i] > vMax) { vMax = smoothed[i]; }
+      if (smoothed[i] < vMin) {
+        vMin = smoothed[i];
+      }
+      if (smoothed[i] > vMax) {
+        vMax = smoothed[i];
+      }
     }
     if (vMax == vMin) {
-      vMax = vMin + 1;             // avoid a zero-height range
+      vMax = vMin + 1; // avoid a zero-height range
     }
 
     //
@@ -170,8 +199,7 @@ public:
     int prevY = -1;
     for (uint8_t i = 0; i < count; i++) {
       int x = PLOT_LEFT_X + ((count > 1) ? ((int) i * (PLOT_WIDTH - 1)) / (count - 1) : 0);
-      int y = PLOT_BOTTOM_ROW -
-              ((int)(smoothed[i] - vMin) * (PLOT_HEIGHT - 1)) / (vMax - vMin);
+      int y = PLOT_BOTTOM_ROW - ((int) (smoothed[i] - vMin) * (PLOT_HEIGHT - 1)) / (vMax - vMin);
 
       int rowTop    = (prevY < 0) ? y : min(y, prevY);
       int rowBottom = (prevY < 0) ? y : max(y, prevY);
@@ -181,50 +209,30 @@ public:
   }
 
 private:
-  const char *title;
-  LabelFormatter formatter;
-  ValueTransform transform;
+  const char    *title;     // fixed header text, e.g. "Temp 48h"
+  LabelFormatter formatter; // renders one already-transformed value into its y-axis label
+  ValueTransform transform; // optional raw-byte -> plotted-value conversion; null = use the raw byte
 
   //
   // symmetric moving average with edge clamping; window=1 is a no-op copy
   //
-  static void graphSmooth(const uint8_t *raw, uint8_t count, uint8_t window, uint8_t *out)
-  {
+  static void graphSmooth(const uint8_t *raw, uint8_t count, uint8_t window, uint8_t *out) {
     int half = window / 2;
     for (uint8_t i = 0; i < count; i++) {
       int sum = 0;
-      int n = 0;
+      int n   = 0;
       for (int k = -half; k <= half; k++) {
         int idx = (int) i + k;
-        if (idx < 0) { idx = 0; }
-        if (idx >= count) { idx = count - 1; }
+        if (idx < 0) {
+          idx = 0;
+        }
+        if (idx >= count) {
+          idx = count - 1;
+        }
         sum += raw[idx];
         n++;
       }
-      out[i] = (uint8_t)(sum / n);
-    }
-  }
-
-  //
-  // set the pixels for one column's vertical run [rowTop..rowBottom]
-  // (inclusive, absolute LCD rows), across however many of the 4 plot
-  // banks it touches
-  //
-  static void graphPlotColumn(int x, int rowTop, int rowBottom)
-  {
-    for (int bank = PLOT_TOP_BANK; bank <= PLOT_BOTTOM_BANK; bank++) {
-      int bankTop = bank * 8;
-      int bankBottom = bankTop + 7;
-      if (rowBottom < bankTop || rowTop > bankBottom) {
-        continue;                                  // this bank untouched - stays blank
-      }
-      int loRow = max(rowTop, bankTop);
-      int hiRow = min(rowBottom, bankBottom);
-      byte pattern = 0;
-      for (int r = loRow; r <= hiRow; r++) {
-        pattern |= (byte)(1 << (r - bankTop));
-      }
-      ui.lcdDrawRowOfPixels(x, x, bank, pattern);
+      out[i] = (uint8_t) (sum / n);
     }
   }
 
@@ -234,8 +242,7 @@ private:
   // (right-justified into the reserved left margin, so they never collide
   // with the plotted data)
   //
-  static void drawYAxis(const char *maxLabel, const char *minLabel)
-  {
+  static void drawYAxis(const char *maxLabel, const char *minLabel) {
     graphPlotColumn(PLOT_LEFT_X - 2, PLOT_TOP_ROW, PLOT_BOTTOM_ROW);
 
     //
@@ -257,9 +264,8 @@ private:
   // ago" label at its left end and "now" at its right end, drawn in the
   // bank just below the plot
   //
-  static void drawXAxis(const char *leftLabel)
-  {
-    ui.lcdDrawRowOfPixels(PLOT_LEFT_X - 2, PLOT_RIGHT_X, X_AXIS_BANK, 0x01);   // thin line, top row of the bank
+  static void drawXAxis(const char *leftLabel) {
+    ui.lcdDrawRowOfPixels(PLOT_LEFT_X - 2, PLOT_RIGHT_X, X_AXIS_BANK, 0x01); // thin line, top row of the bank
 
     ui.lcdSetCursorXY(PLOT_LEFT_X - 2, X_AXIS_BANK);
     ui.lcdPrintString((char *) leftLabel);
@@ -280,4 +286,4 @@ extern Graph humidityGraph;
 extern Graph batteryGraph;
 extern Graph chargeGraph;
 
-#endif  // GRAPHS_H
+#endif // GRAPHS_H

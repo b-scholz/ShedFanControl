@@ -1,15 +1,13 @@
 //      ******************************************************************
 //      *                                                                *
 //      *   history.h  -  History: a generic rolling ring-buffer of      *
-//      *                 HISTORY_POINTS byte-valued samples, fed by a   *
-//      *                 running accumulator that averages raw samples  *
-//      *                 into one point every `samplesPerBucket` calls  *
-//      *                 to addSample().                                *
+//      *                 data points, fed by a running                  *
+//      *                 accumulator that averages raw samples into     *
+//      *                 the next data point.                           *
 //      *                                                                *
 //      *   Public interface:                                            *
-//      *     addSample(v)    - feed one already-rounded-to-a-byte raw   *
-//      *                       sample into the running accumulator for  *
-//      *                       the current bucket                       *
+//      *     addSample(v)    - feed raw sample into the running         *
+//      *                       accumulator for the current data point   *
 //      *     count()         - how many ring-buffer points are valid    *
 //      *     get(i)          - point i, 0 = oldest, count()-1 = newest  *
 //      *                                                                *
@@ -21,32 +19,30 @@
 #include <Arduino.h>
 #include "config.h"
 
-class History {
+class History
+{
 public:
   //
-  // Enter: samplesPerBucketIn = how many addSample() calls get averaged
+  // Enter: samplesPerDataPointIn = how many addSample() calls get averaged
   //        into one ring-buffer point - the owner computes this from its
   //        own "how far back" span / HISTORY_POINTS / CONTROL_INTERVAL.
   //
-  explicit History(uint16_t samplesPerBucketIn) : samplesPerBucket(samplesPerBucketIn) {}
+  explicit History(uint16_t samplesPerDataPointIn) : samplesPerDataPoint(samplesPerDataPointIn) {}
 
   //
-  // Accumulate one raw sample; once samplesPerBucket samples have been fed
-  // in, their average becomes the next ring-buffer point (overwriting the
+  // Accumulate one raw sample; once samplesPerDataPoint samples have been fed
+  // in, their average becomes the next data  point (overwriting the
   // oldest one once the buffer is full) and the accumulator resets for the
-  // next bucket. accumulatorSum is 32-bit because a full bucket can hold
-  // thousands of samples (e.g. 3600 for a 48h/24-point history at a 2s
-  // sampling interval) - at up to 255 per sample that overflows a 16-bit sum.
-  //
+  // next data point.
   void addSample(uint8_t value) {
     accumulatorSum += value;
     accumulatorCount++;
-    if (accumulatorCount < samplesPerBucket) {
+    if (accumulatorCount < samplesPerDataPoint) {
       return;
     }
 
-    uint8_t point = (uint8_t)(accumulatorSum / accumulatorCount);
-    accumulatorSum = 0;
+    uint8_t point    = (uint8_t) (accumulatorSum / accumulatorCount);
+    accumulatorSum   = 0;
     accumulatorCount = 0;
 
     //
@@ -58,7 +54,7 @@ public:
       pointCount++;
     } else {
       writeIndex = head;
-      head = (head + 1) % HISTORY_POINTS;
+      head       = (head + 1) % HISTORY_POINTS;
     }
     points[writeIndex] = point;
   }
@@ -68,7 +64,7 @@ public:
   // then stays there as older points start being overwritten)
   //
   uint8_t count() const {
-      return pointCount;
+    return pointCount;
   }
 
   //
@@ -79,14 +75,14 @@ public:
   }
 
 private:
-  const uint16_t samplesPerBucket;
+  const uint16_t samplesPerDataPoint; // addSample() calls averaged into one ring-buffer point
 
-  uint8_t points[HISTORY_POINTS];
-  uint8_t head = 0;         // index of the oldest valid point
-  uint8_t pointCount = 0;   // how many of points[] are valid
+  uint8_t points[HISTORY_POINTS]; // the ring buffer itself
+  uint8_t head       = 0;         // index of the oldest valid point
+  uint8_t pointCount = 0;         // how many of points[] are valid
 
-  uint32_t accumulatorSum = 0;
-  uint16_t accumulatorCount = 0;
+  uint32_t accumulatorSum   = 0; // running sum for the data point currently accumulating
+  uint16_t accumulatorCount = 0; // samples folded into accumulatorSum so far
 };
 
-#endif  // HISTORY_H
+#endif // HISTORY_H

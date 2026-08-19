@@ -7,21 +7,13 @@
 //      *     init() / read()                                             *
 //      *     getTemp() / getHumidity() / isOk()                          *
 //      *                                                                *
-//      *   Standalone class (no Module base) - unlike the other          *
-//      *   subsystems, this one never touches EEPROM or the LCD, so it   *
-//      *   has no need for the shared `ui` reference they use.           *
-//      *                                                                *
-//      *   The 48h temp/humidity history behind the graph screens is     *
-//      *   ControlLoop's responsibility now, not Sensor's - see          *
-//      *   control_loop.h.                                               *
-//      *                                                                *
 //      ******************************************************************
 
 #ifndef SENSOR_H
 #define SENSOR_H
 
 #include <Arduino.h>
-#include <DHT.h>                    // Adafruit "DHT sensor library" (+ "Adafruit Unified Sensor")
+#include <DHT.h> // Adafruit "DHT sensor library" (+ "Adafruit Unified Sensor")
 #include "config.h"
 
 // ---------------------------------------------------------------------------------
@@ -50,8 +42,8 @@ const byte DHT_SENSOR_FAIL_LIMIT = 5;
 //
 const byte DHT_OVERSAMPLE_COUNT = 8;
 
-
-class Sensor {
+class Sensor
+{
 public:
   Sensor() : dht(DHT_PIN, DHT11) {}
 
@@ -77,7 +69,7 @@ public:
   //
   void read() {
     float h = dht.readHumidity();
-    float t = dht.readTemperature();        // Celsius
+    float t = dht.readTemperature(); // Celsius
 
     if (isnan(h) || isnan(t)) {
       if (failCount < 255) {
@@ -90,48 +82,48 @@ public:
     }
 
     tempSum += t;
-    humSum  += h;
+    humSum += h;
     sampleCount++;
 
     temp     = tempSum / sampleCount;
-    humidity = humSum  / sampleCount;
+    humidity = humSum / sampleCount;
 
     if (sampleCount >= DHT_OVERSAMPLE_COUNT) {
       tempSum = humSum = 0;
-      sampleCount = 0;
+      sampleCount      = 0;
     }
 
     failCount = 0;
-    ok = true;
+    ok        = true;
   }
 
-  float getTemp() const      {
-      return temp;
+  float getTemp() const {
+    return temp;
   }
   float getHumidity() const {
-      return humidity;
+    return humidity;
   }
-  bool  isOk() const        {
-      return ok;
+  bool isOk() const {
+    return ok;
   }
 
 private:
   DHT dht;
 
-  float temp = NAN;
-  float humidity = NAN;
-  byte  failCount = 0;
-  bool  ok = false;
+  float temp      = NAN;   // running-average temperature, C - see read()
+  float humidity  = NAN;   // running-average humidity, %RH - see read()
+  byte  failCount = 0;     // consecutive failed reads since the last good one
+  bool  ok        = false; // false once failCount reaches DHT_SENSOR_FAIL_LIMIT
 
   //
   // running-average accumulator for the current oversampling window - see
   // read() above. No per-sample buffer needed, just the sum and count.
   //
-  float tempSum = 0;
-  float humSum = 0;
-  byte  sampleCount = 0;   // samples folded into tempSum/humSum so far (< DHT_OVERSAMPLE_COUNT)
+  float tempSum     = 0;
+  float humSum      = 0;
+  byte  sampleCount = 0; // samples folded into tempSum/humSum so far (< DHT_OVERSAMPLE_COUNT)
 };
 
-extern Sensor sensor;   // defined in the main sketch
+extern Sensor sensor; // defined in the main sketch
 
-#endif  // SENSOR_H
+#endif // SENSOR_H

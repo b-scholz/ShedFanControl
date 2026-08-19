@@ -3,24 +3,7 @@
 //      *   fan.h  -  Fan: one physical fan's raw PWM + tach hardware -   *
 //      *              which pin, which Timer1 compare register, how to   *
 //      *              write a duty percent, and turning counted tach     *
-//      *              pulses into a measured RPM. No PID, no EEPROM -     *
-//      *              FanPIDControl (fan_pid_control.h) closes the loop  *
-//      *              on top of a Fan it holds by reference (composition,*
-//      *              not inheritance - a Fan is usable standalone, with  *
-//      *              no feedback, and doesn't know PID control exists). *
-//      *                                                                 *
-//      *   Two instances, fanLeftHw/fanRightHw, defined in                *
-//      *   FanController.ino - FansController (fans_controller.h) reaches *
-//      *   these directly for raw duty/RPM access (manual mode, kick-start,*
-//      *   stop, mismatch-check reads), rather than through               *
-//      *   FanPIDControl, which deliberately doesn't re-expose them.       *
-//      *                                                                 *
-//      *   No notion of "stalled" here - a fixed RPM threshold can't tell *
-//      *   a genuinely stalled fan from one that's just spinning slowly   *
-//      *   on purpose (Fan itself has no idea what RPM it was *supposed*  *
-//      *   to reach). FanPIDControl::isStalled() (fan_pid_control.h)      *
-//      *   judges that instead, against each fan's own measured stall     *
-//      *   RPM from autotune.                                             *
+//      *              pulses into a measured RPM.
 //      *                                                                 *
 //      *   Public interface:                                             *
 //      *     init()               - this fan's pin/ISR bring-up; the      *
@@ -49,14 +32,13 @@
 // driven by Timer1 reconfigured to 25 kHz (see Fan::init() in
 // fan.h).
 //
-const byte FAN_PWM_LEFT_PIN  = 9;    // OC1A
-const byte FAN_PWM_RIGHT_PIN = 10;   // OC1B
+const byte FAN_PWM_LEFT_PIN  = 9;  // OC1A
+const byte FAN_PWM_RIGHT_PIN = 10; // OC1B
 
 // Fan tachometer inputs (the fan's green TACH wire).  These MUST be the
 // hardware-interrupt pins D2 and D3 on the Nano.
-const byte FAN_TACH_LEFT_PIN  = 2;   // INT0, ISR channel 0
-const byte FAN_TACH_RIGHT_PIN = 3;   // INT1, ISR channel 1
-
+const byte FAN_TACH_LEFT_PIN  = 2; // INT0, ISR channel 0
+const byte FAN_TACH_RIGHT_PIN = 3; // INT1, ISR channel 1
 
 //
 // 25 kHz on a 16 MHz AVR:  TOP = 16,000,000 / 25,000 - 1 = 639.
@@ -73,7 +55,7 @@ const unsigned int PWM_TOP = 639;
 //
 const byte TACH_ISR_CHANNEL_COUNT = 2;
 
-const byte FAN_TACH_PULSES_PER_REV = 2;   // standard for PC fans
+const byte FAN_TACH_PULSES_PER_REV = 2; // standard for PC fans
 
 //
 // Duty range bounds - off and full duty come up often enough (manual mode,
@@ -87,7 +69,6 @@ const byte SPEED_HIGH_PCT = 100;
 // before settling at a lower target speed - see kickstart() below.
 //
 const unsigned int FAN_KICKSTART_MS = 300;
-
 
 class Fan : public Module
 {
@@ -103,10 +84,8 @@ public:
   //                        below) this fan's tach interrupt uses; must be
   //                        < TACH_ISR_CHANNEL_COUNT
   //
-  Fan(ArduinoUserInterface &uiRef, byte pwmPinIn, volatile uint16_t *ocrRegIn,
-      byte tachPinIn, byte isrChannelIn)
-    : Module(uiRef), pwmPin(pwmPinIn), ocrReg(ocrRegIn),
-      tachPin(tachPinIn), isrChannel(isrChannelIn) {}
+  Fan(ArduinoUserInterface &uiRef, byte pwmPinIn, volatile uint16_t *ocrRegIn, byte tachPinIn, byte isrChannelIn)
+      : Module(uiRef), pwmPin(pwmPinIn), ocrReg(ocrRegIn), tachPin(tachPinIn), isrChannel(isrChannelIn) {}
 
   //
   // this fan's PWM/tach pin bring-up. The shared Timer1 PWM mode config (25
@@ -134,8 +113,8 @@ public:
   // loading its Timer1 compare register - open-loop, no feedback.
   //
   void setDuty(byte pct) {
-    duty = pct;
-    *ocrReg = (unsigned int)((unsigned long) pct * PWM_TOP / 100);
+    duty    = pct;
+    *ocrReg = (unsigned int) ((unsigned long) pct * PWM_TOP / 100);
   }
 
   //
@@ -143,7 +122,7 @@ public:
   // read back from the hardware.
   //
   byte getDuty() const {
-      return duty;
+    return duty;
   }
 
   //
@@ -158,11 +137,11 @@ public:
     // RPM = pulses / pulsesPerRev / (interval[s]) * 60
     //
     unsigned long k = 60000UL / (CONTROL_INTERVAL * FAN_TACH_PULSES_PER_REV);
-    rpm = (unsigned int)(c * k);
+    rpm             = (unsigned int) (c * k);
   }
 
   unsigned int getRpm() const {
-      return rpm;
+    return rpm;
   }
 
   //
@@ -176,16 +155,16 @@ public:
   }
 
 private:
-  const byte pwmPin;
-  volatile uint16_t *const ocrReg;
-  const byte tachPin;
-  const byte isrChannel;
+  const byte               pwmPin;     // this fan's PWM output pin (D9 or D10)
+  volatile uint16_t *const ocrReg;     // this fan's Timer1 compare register (&OCR1A or &OCR1B)
+  const byte               tachPin;    // this fan's tachometer input pin (D2 or D3)
+  const byte               isrChannel; // this fan's index into instances[]/tachISRTable below
 
-  byte duty = 0;
-  volatile unsigned int tachCount = 0;
-  unsigned int rpm = 0;
+  byte                  duty      = 0; // last duty percent passed to setDuty()
+  volatile unsigned int tachCount = 0; // tach pulses counted since the last readTachCount()
+  unsigned int          rpm       = 0; // last RPM computed by read()
 
-  static bool timer1Configured;
+  static bool timer1Configured; // guards the shared Timer1 PWM setup to run only once
 
   //
   // read and clear the tach pulse count accumulated since the last call -
@@ -194,7 +173,7 @@ private:
   unsigned int readTachCount() {
     noInterrupts();
     unsigned int c = tachCount;
-    tachCount = 0;
+    tachCount      = 0;
     interrupts();
     return c;
   }
@@ -205,8 +184,8 @@ private:
   //
   static void setupTimer1() {
     TCCR1A = _BV(COM1A1) | _BV(COM1B1) | _BV(WGM11);
-    TCCR1B = _BV(WGM13)  | _BV(WGM12)  | _BV(CS10);
-    ICR1  = PWM_TOP;
+    TCCR1B = _BV(WGM13) | _BV(WGM12) | _BV(CS10);
+    ICR1   = PWM_TOP;
   }
 
   //
@@ -222,8 +201,7 @@ private:
   //
   static Fan *instances[TACH_ISR_CHANNEL_COUNT];
 
-  template <byte CHANNEL>
-  static void tachISR() {
+  template <byte CHANNEL> static void tachISR() {
     if (instances[CHANNEL]) {
       instances[CHANNEL]->tachCount++;
     }
@@ -235,14 +213,14 @@ private:
 
 bool Fan::timer1Configured = false;
 
-Fan *Fan::instances[TACH_ISR_CHANNEL_COUNT] = { nullptr, nullptr };
+Fan *Fan::instances[TACH_ISR_CHANNEL_COUNT] = {nullptr, nullptr};
 
 const Fan::TachISRFunc Fan::tachISRTable[TACH_ISR_CHANNEL_COUNT] = {
-  Fan::tachISR<0>,
-  Fan::tachISR<1>,
+    Fan::tachISR<0>,
+    Fan::tachISR<1>,
 };
 
-extern Fan fanLeftHw;    // defined in the main sketch
-extern Fan fanRightHw;   // defined in the main sketch
+extern Fan fanLeft;  // defined in the main sketch
+extern Fan fanRight; // defined in the main sketch
 
-#endif  // FAN_H
+#endif // FAN_H

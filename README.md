@@ -30,13 +30,13 @@ table - they talk to every other subsystem exclusively through those public
 methods, never their internal state directly (they stay plain free
 functions rather than a class, since `MENU_ITEM`'s function-pointer table
 needs C-compatible callbacks, which a non-static member function can't
-provide). `Battery`/`Fan`/`FanPIDControl`/`FanControl`/
+provide). `Battery`/`Fan`/`FanPIDControl`/`FansController`/
 `ControlLoop`/`Display` all inherit a small `Module` base class (`module.h`)
 that gives them a shared `protected ui` reference for EEPROM/LCD access, plus a
 generalized struct-based EEPROM helper (see "EEPROM layout" below); `Sensor`
 never touches EEPROM, so it's a plain standalone class instead. `ControlLoop`
-takes its `Sensor`/`Battery`/`FanControl` dependencies as constructor
-references rather than reaching for globals - likewise `FanControl` takes
+takes its `Sensor`/`Battery`/`FansController` dependencies as constructor
+references rather than reaching for globals - likewise `FansController` takes
 two `Fan&` *and* two `FanPIDControl&` (see `fan.h`/`fan_pid_control.h`
 below): it talks to the `Fan` references directly for raw duty/RPM (manual
 mode, kick-start, stop, mismatch checks) and to the `FanPIDControl`
@@ -54,7 +54,7 @@ declaration in its own header - see the comment block at the top of
 | File                | Purpose                                                                |
 |---------------------|-------------------------------------------------------------------------|
 | `FanController.ino` | Instantiates every subsystem object, `setup()`, the main loop, **and** the live status screens + every menu command/tree (free functions, not a class - see above). |
-| `module.h`          | `Module` - shared base class giving `Battery`/`BatteryCharge`/`Fan`/`FanPIDControl`/`FanControl`/`ControlLoop`/`Display` a `protected ui` reference, plus the generalized struct-based EEPROM `loadState()`/`saveState()` helpers. |
+| `module.h`          | `Module` - shared base class giving `Battery`/`BatteryCharge`/`Fan`/`FanPIDControl`/`FansController`/`ControlLoop`/`Display` a `protected ui` reference, plus the generalized struct-based EEPROM `loadState()`/`saveState()` helpers. |
 | `config.h`          | The truly cross-cutting things: `CONTROL_INTERVAL`/`HISTORY_POINTS` (needed by files included before `control_loop.h`, which otherwise owns that cadence/sizing - see the comment at the top of `config.h`) and the EEPROM address book (see "EEPROM layout" below). |
 | `history.h`         | `History` class - a generic rolling 48h ring buffer for one byte-valued channel; `ControlLoop` owns three instances (temp/humidity/battery voltage) - see below. |
 | `sensor.h`          | `Sensor` class - **Temp/Humid Sensor (DHT11)** - pins/tuning, reading, oversampling, fail detection. |
@@ -62,8 +62,8 @@ declaration in its own header - see the comment block at the top of
 | `battery_charge.h`  | `BatteryCharge` class - turns a voltage into a state-of-charge estimate via a runtime-editable curve. Split out from `Battery`, which never needs to know charge % exists - see "Battery charge curve" below. |
 | `fan.h`             | `Fan` class - **one physical fan's** raw PWM + tach hardware only: pin, Timer1 compare register, `setDuty()`/`getDuty()`, `read()`/`getRpm()`. No PID/EEPROM at all. Instantiated *twice* - `fanLeftHw`/`fanRightHw` - and reached directly (not through `FanPIDControl`) by anything that needs raw duty/RPM access. |
 | `fan_pid_control.h` | `FanPIDControl` class - closed-loop PID on top of a `Fan` it holds *by reference* (composition, not inheritance): gains, `autotuneStep()`/`computeAutotunePID()`. Deliberately doesn't re-expose the `Fan` methods it wraps (including `kickstart()`) as pass-throughs. Instantiated *twice* - `fanLeft`/`fanRight` - so there's no Left/Right-suffixed duplication anywhere. |
-| `fan_control.h`     | `FanControl` class - the *pair-level* control law over both `Fan`s and `FanPIDControl`s: drives both to the same target RPM/duty every cycle, and cross-checks their measured RPM for a sustained mismatch fault. |
-| `control_loop.h`    | `ControlLoop` class - manual/auto mode, climate thresholds, the auto RPM law, the per-cycle orchestration, **and the 48h temp/humidity/battery-voltage history** (`History` instances fed straight from Sensor/Battery's live readings each cycle - see "History storage" below). Takes `Sensor`/`Battery`/`FanControl` by constructor reference; exposes only `public` getter/setter/`service()` methods. |
+| `fans_controller.h` | `FansController` class - the *pair-level* control law over both `Fan`s and `FanPIDControl`s: drives both to the same target RPM/duty every cycle, and cross-checks their measured RPM for a sustained mismatch fault. |
+| `control_loop.h`    | `ControlLoop` class - manual/auto mode, climate thresholds, the auto RPM law, the per-cycle orchestration, **and the 48h temp/humidity/battery-voltage history** (`History` instances fed straight from Sensor/Battery's live readings each cycle - see "History storage" below). Takes `Sensor`/`Battery`/`FansController` by constructor reference; exposes only `public` getter/setter/`service()` methods. |
 | `display.h`         | `Display` class - LCD/button pins, contrast, and backlight (on-activity, auto-off). |
 | `graphs.h`          | `Graph` class - draws one auto-scaled 48h line graph from a `History` (`draw(hist)` is its whole per-call interface); `tempGraph`/`humidityGraph`/`batteryGraph`/`chargeGraph` are four specializations (title + label formatter, +value transform for charge), configured once at construction. |
 | `circuit.svg`       | Wiring diagram.                                                        |
@@ -266,8 +266,8 @@ function of the *more demanding* reading:
 - **At or above either HIGH threshold → fans go to HIGH RPM.** This is the *only*
   condition that accepts the noise and extra wear.
 
-Targets come from `FanControl::getLowRpm()`/`getMedRpm()`/`getHighRpm()` in
-`fan_control.h` — not fixed constants, but **derived from autotuning your
+Targets come from `FansController::getLowRpm()`/`getMedRpm()`/`getHighRpm()` in
+`fans_controller.h` — not fixed constants, but **derived from autotuning your
 actual fans**: each is the lower of both fans' own autotune-measured RPM at
 the LOW/HIGH/MAX duty points, see "PID tuning and autotune" and "Closed-loop
 RPM control" below.
@@ -278,7 +278,7 @@ The control law above decides a **target RPM**, not a PWM duty. Each fan is
 driven by its own `FanPIDControl` object (`fan_pid_control.h`), which holds a
 reference to the `Fan` (`fan.h`) whose hardware it drives, with its own PID
 loop (`FanPIDControl::runPid()`);
-`FanControl::driveAuto()` (`fan_control.h`, called every cycle from
+`FansController::driveAuto()` (`fans_controller.h`, called every cycle from
 `ControlLoop::service()` in `control_loop.h`) simply calls it on both
 `fanLeft`/`fanRight` with the same target RPM. Each call reads that fan's
 *actual* tachometer speed and adjusts its own PWM duty to close the gap —
@@ -340,7 +340,7 @@ Extra behaviour (unchanged from before, now RPM-driven rather than duty-driven):
   autotuned, its stall RPM is uncalibrated and `STALL` never shows for it —
   run **Tune Left**/**Tune Right** once per fan to enable this.
 - **Both fans are always commanded to the identical target RPM** (never separate
-  per-fan targets — see `FanControl::driveAuto()` in `fan_control.h`), so under normal operation their measured
+  per-fan targets — see `FansController::driveAuto()` in `fans_controller.h`), so under normal operation their measured
   speeds converge to match each other, not just the setpoint. If they nonetheless
   disagree by more than `FAN_RPM_MISMATCH_RPM` (default 300) for
   `FAN_MISMATCH_DEBOUNCE_CYCLES` (default 3, i.e. 6s sustained) — a real fault the
@@ -348,8 +348,13 @@ Extra behaviour (unchanged from before, now RPM-driven rather than duty-driven):
   in Manual mode, where duty (not RPM) is the same on both fans by design and a
   natural RPM difference is expected, not a fault.
 - **Sensor fail-safe**: after 5 consecutive failed reads the display shows
-  `SENSOR FAIL` and the fans hold a safe, quiet **MED RPM** target (`FanControl::getMedRpm()`)
-  so the shed keeps airing.
+  `SENSOR FAIL` and `ControlLoop::service()` switches to Manual mode automatically
+  (same as flipping the menu's **Manual** toggle yourself), so the fans hold
+  whatever duty **Fan speed %** is set to rather than the control law guessing a
+  target from a dead sensor. This is a one-way switch — the sensor coming back
+  doesn't switch back to Auto on its own, since a flaky sensor flapping the mode
+  back and forth would be more confusing than staying in Manual until you notice
+  and switch back yourself.
 
 ### PID tuning and autotune
 
@@ -379,7 +384,7 @@ hand-tuning:
   constant, chosen because a coarse 2s-updated RPM signal amplifies noise if
   the derivative term is too aggressive - see the note on Kd above.
 - The **max** point (100% duty) doesn't feed into Kp/Ki/Kd either - it's this
-  fan's actual RPM ceiling, feeding `FanControl::getHighRpm()` (the lower of
+  fan's actual RPM ceiling, feeding `FansController::getHighRpm()` (the lower of
   both fans' ceilings - see "Control philosophy" above) without a separate
   trip to Manual mode.
 - The measured **stall RPM**, **low/high RPM** (feeding `getLowRpm()`/
@@ -655,7 +660,7 @@ both `fanLeft` and `fanRight`, since it's one `FanPIDControl` class instantiated
   `FAN_HIGH_RPM` values exactly, so an un-autotuned pair of fans behaves the
   same as before.
 
-**`fan_control.h`** (pair-level RPM targets and mismatch detection):
+**`fans_controller.h`** (pair-level RPM targets and mismatch detection):
 - `getLowRpm()`/`getMedRpm()`/`getHighRpm()` - **not tunable constants
   anymore** - each is the lower of both fans' own autotune-measured RPM (see
   `fan_pid_control.h` above), so run **Tune Left**/**Tune Right** on both
@@ -693,8 +698,8 @@ both `fanLeft` and `fanRight`, since it's one `FanPIDControl` class instantiated
   above.
 
 **`control_loop.h`** (history span, climate defaults):
-- `TEMP_HUMID_HISTORY_HOURS`/`BATTERY_HISTORY_HOURS` (how far back each
-  `History` graph reaches - see "History storage" above).
+- `HISTORY_HOURS` (how far back each `History` graph reaches - see "History
+  storage" above).
 - `DEFAULT_TEMP_START`/`_HIGH`/`DEFAULT_HUM_START`/`_HIGH` (power-up climate
   thresholds - see "Thresholds" in the menu for the runtime-editable copies),
   `TEMP_HYSTERESIS`/`HUM_HYSTERESIS`.
@@ -705,7 +710,7 @@ both `fanLeft` and `fanRight`, since it's one `FanPIDControl` class instantiated
   read rate, PID timing, history bucket sizing). `HISTORY_POINTS` (shared
   resolution for all three `History` buffers - see "History storage" above).
   Both live here rather than with `control_loop.h` (which otherwise owns this
-  cadence/sizing conceptually) because `fan.h`/`fan_control.h`/`history.h`
+  cadence/sizing conceptually) because `fan.h`/`fans_controller.h`/`history.h`
   need them and are included *before* `control_loop.h` in `FanController.ino`
   - see the comment at the top of `config.h`.
 - The EEPROM address book: `EEPROM_LCD_BASE_IDX`/`EEPROM_CONTROL_BASE_IDX`/
@@ -732,22 +737,25 @@ helpers (a 1-byte "never written" flag plus the value, per field). `FanPIDContro
 (`fan_pid_control.h`) instead uses a more generic mechanism, added specifically so two
 instances of the same class could each get independent persisted state
 without hand-numbering per-field addresses per side: its entire persisted
-state - the three PID gains, the battery voltage they (and the stall/max
-RPM below) were last calibrated at, and this fan's own measured stall RPM
-and max RPM from autotune (see "PID tuning and autotune" above) - is one
-plain struct (`PersistedGains`, whose member initializers double as the
-power-up defaults), and `Module::loadState()`/`saveState()` (`module.h`)
-move that whole struct to/from EEPROM as a single block via
-`EEPROM.get()`/`put()`, at a base offset passed into the `FanPIDControl`
-constructor - one raw flag byte (the same "0xFF = never written" convention
-as the library's own helpers) plus `sizeof(PersistedGains)` (20 bytes: four
-floats plus two `unsigned int`s). `fanLeft`/`fanRight` are constructed with
+state - the three PID gains, the battery voltage they (and the stall/low/
+high/max RPM below) were last calibrated at, and this fan's own measured
+stall RPM plus its RPM at the LOW/HIGH/MAX autotune duty points (see "PID
+tuning and autotune" above) - is one plain struct (`PersistedParams`, whose
+member initializers double as the power-up defaults), and
+`Module::loadState()`/`saveState()` (`module.h`) move that whole struct
+to/from EEPROM as a single block via `EEPROM.get()`/`put()`, at a base
+offset passed into the `FanPIDControl` constructor - one raw flag byte (the
+same "0xFF = never written" convention as the library's own helpers) plus
+`sizeof(PersistedParams)` (24 bytes: four floats plus four `unsigned int`s).
+`fanLeft`/`fanRight` are constructed with
 `EEPROM_FAN_LEFT_BASE_IDX`/`EEPROM_FAN_RIGHT_BASE_IDX`
-(`fan_control.h`, 24 bytes apart within the `EEPROM_FAN_BASE_IDX` block - a
-little headroom over the 21 actually used) and are otherwise identical `FanPIDControl`
+(`fans_controller.h`, 28 bytes apart within the `EEPROM_FAN_BASE_IDX` block - a
+little headroom over the 25 actually used) and are otherwise identical `FanPIDControl`
 objects - the two instances' state never collides simply because they were
-constructed with two different offsets. Any subsystem could adopt the same
-`loadState()`/`saveState()` pair for its own settings; the others just
+constructed with two different offsets. A `static_assert` right next to those
+two base constants makes it a build failure if `PersistedParams` ever grows
+without widening that 28-byte spacing to match. Any subsystem could adopt the
+same `loadState()`/`saveState()` pair for its own settings; the others just
 haven't needed to.
 
 > **Timer note:** the sketch reprograms **Timer1** for 25 kHz PWM, so `analogWrite()`

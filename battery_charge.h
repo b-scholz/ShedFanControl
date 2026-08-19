@@ -10,17 +10,8 @@
 //      *     get/setSocVoltage(i) / getSocPercentLabel(i)                 *
 //      *     BATTERY_SOC_TABLE_SIZE      - point count (fixed)            *
 //      *                                                                  *
-//      *   Split out of Battery (battery.h): that class only ever reads   *
-//      *   and calibrates a voltage, and never needs to know charge %     *
-//      *   exists. BatteryCharge is the only place that translates a      *
-//      *   voltage into "how full is the battery" - callers pass it the   *
-//      *   voltage they already have (from Battery::getVoltage()          *
-//      *   or a history point), rather than this class reading the ADC    *
-//      *   itself.                                                        *
-//      *                                                                  *
-//      *   Menu commands that read/write the curve live in                *
-//      *   FanController.ino - this file has no ui.displaySlider()/menu   *
-//      *   code of its own.                                               *
+//      *   BatteryCharge translates a voltage into "how full is the
+//      *   battery"
 //      *                                                                  *
 //      ********************************************************************
 
@@ -40,19 +31,14 @@
 // measurement, since there's no current sensing.  This table is only the
 // power-up *default* - see BatteryCharge::socVoltage[] below.
 //
-struct BatterySocPoint {
-    float voltage;
-    byte percent;
+struct BatterySocPoint
+{
+  float voltage;
+  byte  percent;
 };
 
 const BatterySocPoint BATTERY_SOC_TABLE[] = {
-  {12.70, 100},
-  {12.40,  80},
-  {12.20,  60},
-  {12.00,  40},
-  {11.80,  20},
-  {11.50,  10},
-  {11.00,   0},
+    {12.70, 100}, {12.40, 80}, {12.20, 60}, {12.00, 40}, {11.80, 20}, {11.50, 10}, {11.00, 0},
 };
 
 const byte BATTERY_SOC_TABLE_SIZE = sizeof(BATTERY_SOC_TABLE) / sizeof(BATTERY_SOC_TABLE[0]);
@@ -76,18 +62,18 @@ const float BATTERY_SOC_VOLTAGE_STEP = 0.1;
 // know this address.
 //
 // one int per BATTERY_SOC_TABLE point (tenths of a volt)
-const int EEPROM_SOC_CURVE_BASE_IDX = EEPROM_BATTERY_VOLTS_SCALAR_IDX + 3;   // int[BATTERY_SOC_TABLE_SIZE] (3 each)
+const int EEPROM_SOC_CURVE_BASE_IDX = EEPROM_BATTERY_VOLTS_SCALAR_IDX + 3; // int[BATTERY_SOC_TABLE_SIZE] (3 each)
 
-
-class BatteryCharge : public Module {
+class BatteryCharge : public Module
+{
 public:
   explicit BatteryCharge(ArduinoUserInterface &uiRef) : Module(uiRef) {}
 
   void init() {
     for (byte i = 0; i < BATTERY_SOC_TABLE_SIZE; i++) {
       int defaultTenths = (int) round(BATTERY_SOC_TABLE[i].voltage * 10.0);
-      int tenths = ui.readConfigurationInt(EEPROM_SOC_CURVE_BASE_IDX + i * 3, defaultTenths);
-      socVoltage[i] = tenths / 10.0;
+      int tenths        = ui.readConfigurationInt(EEPROM_SOC_CURVE_BASE_IDX + i * 3, defaultTenths);
+      socVoltage[i]     = tenths / 10.0;
     }
   }
 
@@ -100,23 +86,21 @@ public:
   //
   byte percentFromVoltage(float v) const {
     if (v >= socVoltage[0]) {
-        return 100;
+      return 100;
     }
     for (byte i = 1; i < BATTERY_SOC_TABLE_SIZE; i++) {
       if (v >= socVoltage[i]) {
-        float vLo = socVoltage[i],
-              vHi = socVoltage[i - 1];
-        byte  pLo = BATTERY_SOC_TABLE[i].percent,
-              pHi = BATTERY_SOC_TABLE[i - 1].percent;
+        float vLo = socVoltage[i], vHi = socVoltage[i - 1];
+        byte  pLo = BATTERY_SOC_TABLE[i].percent, pHi = BATTERY_SOC_TABLE[i - 1].percent;
         float frac = (v - vLo) / (vHi - vLo);
-        return (byte)(pLo + frac * (pHi - pLo) + 0.5);
+        return (byte) (pLo + frac * (pHi - pLo) + 0.5);
       }
     }
-    return 0;   // at or below the lowest table entry
+    return 0; // at or below the lowest table entry
   }
 
   float getSocVoltage(byte index) const {
-      return socVoltage[index];
+    return socVoltage[index];
   }
 
   //
@@ -124,9 +108,13 @@ public:
   // only the voltage at each point is editable, not this
   //
   byte getSocPercentLabel(byte index) const {
-      return BATTERY_SOC_TABLE[index].percent;
+    return BATTERY_SOC_TABLE[index].percent;
   }
 
+  //
+  // recalibrate curve point `index`'s voltage and persist it to EEPROM -
+  // see "Charge curve" in FanController.ino.
+  //
   void setSocVoltage(byte index, float volts) {
     socVoltage[index] = volts;
     ui.writeConfigurationInt(EEPROM_SOC_CURVE_BASE_IDX + index * 3, (int) round(volts * 10.0));
@@ -142,6 +130,6 @@ private:
   float socVoltage[BATTERY_SOC_TABLE_SIZE];
 };
 
-extern BatteryCharge batteryCharge;   // defined in the main sketch
+extern BatteryCharge batteryCharge; // defined in the main sketch
 
-#endif  // BATTERY_CHARGE_H
+#endif // BATTERY_CHARGE_H

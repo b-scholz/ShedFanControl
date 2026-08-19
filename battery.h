@@ -6,11 +6,7 @@
 //      *     init()                     - initialize battery sensing      *
 //      *     read()                     - fresh, oversampled ADC read     *
 //      *                                  (ADC times the calibrated       *
-//      *                                  volts-per-count scalar);        *
-//      *                                  updates getVoltage()'s cache    *
-//      *                                  the only reading method         *
-//      *                                  anything outside this class     *
-//      *                                  should call every cycle         *
+//      *                                  volts-per-count scalar)         *
 //      *     getVoltage()               - last read()'s result, for       *
 //      *                                  display without a fresh ADC     *
 //      *                                  read                            *
@@ -32,9 +28,8 @@
 //                       Battery sensing pins and divider
 // ---------------------------------------------------------------------------------
 
-// 12V SLA battery voltage sense.  A7 is analog-input-only on the Nano (like
-// A6 for the buttons), read through a resistor-divider that scales the
-// battery voltage down into the 0-5V ADC range.
+// 12V SLA battery voltage sense on pin A7, read through a resistor-divider that
+// scales the battery voltage down into the 0-5V ADC range.
 const byte BATTERY_ADC_PIN = A7;
 
 //
@@ -47,19 +42,9 @@ const float BATTERY_R1 = 100000.0;
 const float BATTERY_R2 = 33000.0;
 
 //
-// Power-up default for the ADC-counts-to-volts scalar, from the divider math
-// above - only used until the "Batt calib" menu flow (see
-// Battery::setScalar() below) has ever saved a runtime-calibrated
-// value. Resistor tolerance and the Nano's actual 5V rail (which isn't
-// exactly 5.000V) mean the true scalar can be off from this ideal value by a
-// few percent - a *multiplicative* error, since it comes from the divider
-// ratio and the ADC reference voltage, both of which scale the reading
-// proportionally rather than shifting it by a fixed amount. That's why
-// calibration adjusts this scalar directly, rather than adding a fixed
-// offset to the result.
+// Power-up default for the ADC-counts-to-volts scalar from the divider math.
 //
-const float BATTERY_VOLTS_SCALAR_DEFAULT =
-    (5.0 / 1023.0) * (BATTERY_R1 + BATTERY_R2) / BATTERY_R2;
+const float BATTERY_VOLTS_SCALAR_DEFAULT = (5.0 / 1023.0) * (BATTERY_R1 + BATTERY_R2) / BATTERY_R2;
 
 //
 // Number of analogRead() samples averaged into one voltage reading, to quiet
@@ -91,16 +76,16 @@ const float BATTERY_LOW_VOLTAGE = 11.5;
 // EEPROM_SOC_CURVE_BASE_IDX (battery_charge.h) chains off this one, so the
 // two files' persisted fields never collide within the shared block.
 //
-const int EEPROM_BATTERY_VOLTS_SCALAR_IDX = EEPROM_BATTERY_BASE_IDX;         // int (3) - scalar * 100000
+const int EEPROM_BATTERY_VOLTS_SCALAR_IDX = EEPROM_BATTERY_BASE_IDX; // int (3) - scalar * 100000
 
-
-class Battery : public Module {
+class Battery : public Module
+{
 public:
   explicit Battery(ArduinoUserInterface &uiRef) : Module(uiRef) {}
 
   void init() {
     int defaultScaled = (int) round(BATTERY_VOLTS_SCALAR_DEFAULT * 100000.0);
-    voltsScalar = ui.readConfigurationInt(EEPROM_BATTERY_VOLTS_SCALAR_IDX, defaultScaled) / 100000.0;
+    voltsScalar       = ui.readConfigurationInt(EEPROM_BATTERY_VOLTS_SCALAR_IDX, defaultScaled) / 100000.0;
   }
 
   //
@@ -118,7 +103,7 @@ public:
       sum += analogRead(BATTERY_ADC_PIN);
 
     float avgCount = (float) sum / BATTERY_ADC_OVERSAMPLE;
-    voltage = avgCount * voltsScalar;
+    voltage        = avgCount * voltsScalar;
   }
 
   //
@@ -126,13 +111,17 @@ public:
   // display, without triggering a fresh ADC read
   //
   float getVoltage() const {
-      return voltage;
+    return voltage;
   }
 
   float getScalar() const {
-      return voltsScalar;
+    return voltsScalar;
   }
 
+  //
+  // apply a newly-calibrated scalar and persist it to EEPROM - see "Batt
+  // calib" in FanController.ino.
+  //
   void setScalar(float scalar) {
     voltsScalar = scalar;
     ui.writeConfigurationInt(EEPROM_BATTERY_VOLTS_SCALAR_IDX, (int) round(scalar * 100000.0));
@@ -143,12 +132,12 @@ private:
 
   //
   // calibrated ADC-counts-to-volts scalar, correcting for divider resistor
-  // tolerance, the Nano's actual 5V rail, etc. - see setCorrection().
+  // tolerance, the Nano's actual 5V rail, etc. - see setScalar().
   // Defaults to BATTERY_VOLTS_SCALAR_DEFAULT; loaded from EEPROM in init().
   //
   float voltsScalar = BATTERY_VOLTS_SCALAR_DEFAULT;
 };
 
-extern Battery battery;   // defined in the main sketch
+extern Battery battery; // defined in the main sketch
 
-#endif  // BATTERY_H
+#endif // BATTERY_H

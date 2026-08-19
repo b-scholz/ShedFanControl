@@ -117,16 +117,16 @@
 // one's own header - never a redeclaration of internal state.
 //
 ArduinoUserInterface ui;
-Sensor sensor;
-Battery battery(ui);
-BatteryCharge batteryCharge(ui);
-Fan fanLeftHw(ui, FAN_PWM_LEFT_PIN, &OCR1A, FAN_TACH_LEFT_PIN, 0);
-Fan fanRightHw(ui, FAN_PWM_RIGHT_PIN, &OCR1B, FAN_TACH_RIGHT_PIN, 1);
-FanPIDControl fanLeft(ui, fanLeftHw, EEPROM_FAN_LEFT_BASE_IDX);
-FanPIDControl fanRight(ui, fanRightHw, EEPROM_FAN_RIGHT_BASE_IDX);
-FansController fanControl(ui, fanLeftHw, fanRightHw, fanLeft, fanRight);
-Display display(ui);
-ControlLoop controlLoop(ui, sensor, battery, fanControl);
+Sensor               sensor;
+Battery              battery(ui);
+BatteryCharge        batteryCharge(ui);
+Fan                  fanLeft(ui, FAN_PWM_LEFT_PIN, &OCR1A, FAN_TACH_LEFT_PIN, 0);
+Fan                  fanRight(ui, FAN_PWM_RIGHT_PIN, &OCR1B, FAN_TACH_RIGHT_PIN, 1);
+PIDFanControl        PidFanLeft(ui, fanLeft, EEPROM_FAN_LEFT_BASE_IDX);
+PIDFanControl        PidFanRight(ui, fanRight, EEPROM_FAN_RIGHT_BASE_IDX);
+FansController       fanControl(ui, fanLeft, fanRight, PidFanLeft, PidFanRight);
+Display              display(ui);
+ControlLoop          controlLoop(ui, sensor, battery, fanControl);
 
 //
 // the four graph specializations (graphs.h) - title + label formatter (+
@@ -138,7 +138,6 @@ Graph tempGraph("Temp 48h", graphFormatPlain);
 Graph humidityGraph("Humid 48h", graphFormatPlain);
 Graph batteryGraph("Battery 48h", graphFormatVolts);
 Graph chargeGraph("Charge 48h", graphFormatPlain, graphChargeFromVoltsTenths);
-
 
 // ---------------------------------------------------------------------------------
 //                          Live status ("home") screens
@@ -155,19 +154,18 @@ Graph chargeGraph("Charge 48h", graphFormatPlain, graphChargeFromVoltsTenths);
 //
 enum MainScreen
 {
-  MAIN_SCREEN_CLIMATE        = 0,   // temperature, humidity, battery
-  MAIN_SCREEN_BATTERY_GRAPH  = 1,   // 48h battery voltage graph
-  MAIN_SCREEN_CHARGE_GRAPH   = 2,   // 48h battery charge (%) graph
-  MAIN_SCREEN_TEMP_GRAPH     = 3,   // 48h temperature graph
-  MAIN_SCREEN_HUMIDITY_GRAPH = 4,   // 48h humidity graph
-  MAIN_SCREEN_FAN            = 5    // fan speed + each fan's RPM
+  MAIN_SCREEN_CLIMATE        = 0, // temperature, humidity, battery
+  MAIN_SCREEN_BATTERY_GRAPH  = 1, // 48h battery voltage graph
+  MAIN_SCREEN_CHARGE_GRAPH   = 2, // 48h battery charge (%) graph
+  MAIN_SCREEN_TEMP_GRAPH     = 3, // 48h temperature graph
+  MAIN_SCREEN_HUMIDITY_GRAPH = 4, // 48h humidity graph
+  MAIN_SCREEN_FAN            = 5  // fan speed + each fan's RPM
 };
-const byte NUM_MAIN_SCREENS = 6;
-static byte mainScreenIndex = MAIN_SCREEN_CLIMATE;
+const byte  NUM_MAIN_SCREENS = 6;
+static byte mainScreenIndex  = MAIN_SCREEN_CLIMATE;
 
-
-void drawClimateScreen();   // forward decl - defined below, used by drawMainScreen()
-void drawFanScreen();       // forward decl - defined below, used by drawMainScreen()
+void drawClimateScreen(); // forward decl - defined below, used by drawMainScreen()
+void drawFanScreen();     // forward decl - defined below, used by drawMainScreen()
 
 //
 // draw whichever main screen is currently selected.  On a full redraw the
@@ -177,14 +175,12 @@ void drawFanScreen();       // forward decl - defined below, used by drawMainScr
 // in-place refreshes skip both, so the same screen's readout can update
 // without flickering.
 //
-void drawMainScreen(bool fullRedraw)
-{
+void drawMainScreen(bool fullRedraw) {
   if (fullRedraw) {
     ui.lcdClearDisplay();
   }
 
-  switch (mainScreenIndex)
-  {
+  switch (mainScreenIndex) {
     case MAIN_SCREEN_CLIMATE:
       drawClimateScreen();
       break;
@@ -210,13 +206,27 @@ void drawMainScreen(bool fullRedraw)
   }
 }
 
+//
+// print one row's fixed-width label (left-justified at column 0) and value
+// (right-justified against the last column) - the shape every row of the
+// Climate and Fans screens shares below; only the row, label, value, and
+// value's field width change between calls. width should be the longest
+// that field can ever be, so a shorter new reading always blanks out
+// whatever longer text was there before - see
+// lcdPrintStringRightJustified()'s padToNumberOfCharacters parameter.
+//
+void printLabeledValue(byte row, const char *label, const char *value, byte width) {
+  ui.lcdSetCursorXY(0, row);
+  ui.lcdPrintString(label);
+  ui.lcdSetCursorXY(LCD_LAST_COLUMN_X, row);
+  ui.lcdPrintStringRightJustified(value, width);
+}
 
 //
 // main screen 1/6: temperature, humidity, battery voltage and charge status
 // (fan status lives only on the dedicated Fans screen)
 //
-void drawClimateScreen()
-{
+void drawClimateScreen() {
   char buf[12];
 
   //
@@ -227,84 +237,54 @@ void drawClimateScreen()
   ui.lcdPrintStringCentered(sensor.isOk() ? "Shed airing" : "SENSOR FAIL", 11);
 
   //
-  // line 1: temperature.  Every dynamic value on this screen is printed with
-  // a fixed pad width (the longest that field can ever be) so a shorter new
-  // reading always blanks out whatever longer text was there before - see
-  // lcdPrintStringRightJustified()'s padToNumberOfCharacters parameter.
+  // line 1: temperature
   //
-  ui.lcdSetCursorXY(0, 1);
-  ui.lcdPrintString("Temp:");
-  ui.lcdSetCursorXY(LCD_LAST_COLUMN_X, 1);
-  if (sensor.isOk())
-  {
+  if (sensor.isOk()) {
     dtostrf(sensor.getTemp(), 1, 1, buf);
     strcat(buf, "C");
-  }
-  else
-  {
+  } else {
     strcpy(buf, "--");
   }
-  ui.lcdPrintStringRightJustified(buf, 6);   // widest: "50.0C"
+  printLabeledValue(1, "Temp:", buf, 6); // widest: "50.0C"
 
   //
   // line 2: humidity
   //
-  ui.lcdSetCursorXY(0, 2);
-  ui.lcdPrintString("Humid:");
-  ui.lcdSetCursorXY(LCD_LAST_COLUMN_X, 2);
-  if (sensor.isOk())
-  {
+  if (sensor.isOk()) {
     dtostrf(sensor.getHumidity(), 1, 1, buf);
     strcat(buf, "%");
-  }
-  else
-  {
+  } else {
     strcpy(buf, "--");
   }
-  ui.lcdPrintStringRightJustified(buf, 6);   // widest: "100.0%"
+  printLabeledValue(2, "Humid:", buf, 6); // widest: "100.0%"
 
   //
   // line 3: battery voltage, or a LOW warning below BATTERY_LOW_VOLTAGE -
-  // SLA batteries are damaged by deep discharge, so this stays visible here
-  // now that the Battery menu's meter view (which used to show it) is gone
+  // SLA batteries are damaged by deep discharge, so this stays visible on
+  // every visit to this screen rather than being tucked away in a menu
   //
   float voltage = battery.getVoltage();
-  ui.lcdSetCursorXY(0, 3);
-  ui.lcdPrintString("Batt:");
-  ui.lcdSetCursorXY(LCD_LAST_COLUMN_X, 3);
-  if (isnan(voltage))
-  {
+  if (isnan(voltage)) {
     strcpy(buf, "--");
-  }
-  else if (voltage < BATTERY_LOW_VOLTAGE)
-  {
+  } else if (voltage < BATTERY_LOW_VOLTAGE) {
     strcpy(buf, "LOW!");
-  }
-  else
-  {
+  } else {
     dtostrf(voltage, 1, 1, buf);
     strcat(buf, "V");
   }
-  ui.lcdPrintStringRightJustified(buf, 6);   // widest: "20.4V" / "LOW!"
+  printLabeledValue(3, "Batt:", buf, 6); // widest: "20.4V" / "LOW!"
 
   //
   // line 4: battery charge status (resting-voltage estimate - see the
   // caveat in README.md). Fan status now lives only on the Fans screen.
   //
-  ui.lcdSetCursorXY(0, 4);
-  ui.lcdPrintString("Charge:");
-  ui.lcdSetCursorXY(LCD_LAST_COLUMN_X, 4);
-  if (isnan(voltage))
-  {
+  if (isnan(voltage)) {
     strcpy(buf, "--");
-  }
-  else
-  {
+  } else {
     sprintf(buf, "%d%%", batteryCharge.percentFromVoltage(voltage));
   }
-  ui.lcdPrintStringRightJustified(buf, 4);   // widest: "100%"
+  printLabeledValue(4, "Charge:", buf, 4); // widest: "100%"
 }
-
 
 //
 // main screen 6/6: fan speed and each fan's individual RPM ("STALL" for a
@@ -314,8 +294,7 @@ void drawClimateScreen()
 // fanLeftHw/fanRightHw Fan objects (fan.h) - this screen never reaches into
 // any object's private state.
 //
-void drawFanScreen()
-{
+void drawFanScreen() {
   char buf[12];
 
   ui.lcdSetCursorXY(LCD_WIDTH_IN_PIXELS / 2, 0);
@@ -329,39 +308,26 @@ void drawFanScreen()
     strcat(fanLabel, "*");
   }
   ui.lcdSetCursorXY(LCD_WIDTH_IN_PIXELS / 2, 1);
-  ui.lcdPrintStringCentered(fanLabel, 5);   // widest: "HIGH*" / "100%*"
+  ui.lcdPrintStringCentered(fanLabel, 5); // widest: "HIGH*" / "100%*"
 
-  bool running = fanControl.isCommandedOn();
-  unsigned int leftRpm  = fanLeftHw.getRpm();
-  unsigned int rightRpm = fanRightHw.getRpm();
+  bool         running  = fanControl.isCommandedOn();
+  unsigned int leftRpm  = fanLeft.getRpm();
+  unsigned int rightRpm = fanRight.getRpm();
 
-  ui.lcdSetCursorXY(0, 3);
-  ui.lcdPrintString("Left:");
-  ui.lcdSetCursorXY(LCD_LAST_COLUMN_X, 3);
-  if (running && fanLeft.isStalled(leftRpm, voltage))
-  {
+  if (running && PidFanLeft.isStalled(leftRpm, voltage)) {
     strcpy(buf, "STALL");
-  }
-  else
-  {
+  } else {
     itoa(running ? leftRpm : 0, buf, 10);
   }
-  ui.lcdPrintStringRightJustified(buf, 5);   // widest: "STALL" / 4-digit RPM
+  printLabeledValue(3, "Left:", buf, 5); // widest: "STALL" / 4-digit RPM
 
-  ui.lcdSetCursorXY(0, 4);
-  ui.lcdPrintString("Right:");
-  ui.lcdSetCursorXY(LCD_LAST_COLUMN_X, 4);
-  if (running && fanRight.isStalled(rightRpm, voltage))
-  {
+  if (running && PidFanRight.isStalled(rightRpm, voltage)) {
     strcpy(buf, "STALL");
-  }
-  else
-  {
+  } else {
     itoa(running ? rightRpm : 0, buf, 10);
   }
-  ui.lcdPrintStringRightJustified(buf, 5);
+  printLabeledValue(4, "Right:", buf, 5);
 }
-
 
 // ---------------------------------------------------------------------------------
 //                              Menu commands
@@ -388,50 +354,41 @@ void setTempHighCallback(byte op, int value);
 void setHumStartCallback(byte op, int value);
 void setHumHighCallback(byte op, int value);
 
-void menuCommandSetTempStart()
-{
+void menuCommandSetTempStart() {
   ui.displaySlider(10, 40, 1, controlLoop.getTempStart(), "Temp start C", setTempStartCallback);
 }
-void setTempStartCallback(byte op, int value)
-{
+void setTempStartCallback(byte op, int value) {
   if (op == SLIDER_DISPLAY_VALUE_SET) {
     controlLoop.setTempStart(value);
   }
 }
 
-void menuCommandSetTempHigh()
-{
+void menuCommandSetTempHigh() {
   ui.displaySlider(11, 45, 1, controlLoop.getTempHigh(), "Temp high C", setTempHighCallback);
 }
-void setTempHighCallback(byte op, int value)
-{
+void setTempHighCallback(byte op, int value) {
   if (op == SLIDER_DISPLAY_VALUE_SET) {
     controlLoop.setTempHigh(value);
   }
 }
 
-void menuCommandSetHumStart()
-{
+void menuCommandSetHumStart() {
   ui.displaySlider(30, 95, 1, controlLoop.getHumStart(), "Humid start%", setHumStartCallback);
 }
-void setHumStartCallback(byte op, int value)
-{
+void setHumStartCallback(byte op, int value) {
   if (op == SLIDER_DISPLAY_VALUE_SET) {
     controlLoop.setHumStart(value);
   }
 }
 
-void menuCommandSetHumHigh()
-{
+void menuCommandSetHumHigh() {
   ui.displaySlider(31, 100, 1, controlLoop.getHumHigh(), "Humid high %", setHumHighCallback);
 }
-void setHumHighCallback(byte op, int value)
-{
+void setHumHighCallback(byte op, int value) {
   if (op == SLIDER_DISPLAY_VALUE_SET) {
     controlLoop.setHumHigh(value);
   }
 }
-
 
 // ---------------------------------------------------------------------------------
 //                     Menu commands: manual override
@@ -441,8 +398,7 @@ void setHumHighCallback(byte op, int value)
 // toggle automatic <-> manual control (state/persistence entirely owned by
 // controlLoop)
 //
-void menuToggleManualCallback()
-{
+void menuToggleManualCallback() {
   if (ui.toggleMenuChangeStateFlag) {
     controlLoop.setManualMode(!controlLoop.getManualMode());
   }
@@ -452,65 +408,60 @@ void menuToggleManualCallback()
 //
 // manual fan speed as a percentage
 //
-void setManualSpeedCallback(byte op, int value);   // forward decl - defined below
+void setManualSpeedCallback(byte op, int value); // forward decl - defined below
 
-void menuCommandSetManualSpeed()
-{
+void menuCommandSetManualSpeed() {
   ui.displaySlider(0, 100, 5, controlLoop.getManualPct(), "Fan speed %", setManualSpeedCallback);
 }
-void setManualSpeedCallback(byte op, int value)
-{
+void setManualSpeedCallback(byte op, int value) {
   //
   // preview the speed live while dragging so it can be tested by ear...
   //
-  if (op == SLIDER_DISPLAY_VALUE_CHANGED)
-  {
+  if (op == SLIDER_DISPLAY_VALUE_CHANGED) {
     controlLoop.previewManualDuty((byte) constrain(value, 0, 100));
   }
   //
   // ...and store it when confirmed
   //
-  else if (op == SLIDER_DISPLAY_VALUE_SET)
-  {
+  else if (op == SLIDER_DISPLAY_VALUE_SET) {
     controlLoop.setManualPct((byte) constrain(value, 0, 100));
   }
 }
-
 
 // ---------------------------------------------------------------------------------
 //                  Menu commands: contrast & backlight timeout
 // ---------------------------------------------------------------------------------
 
-void setContrastCallback(byte op, int value);   // forward decl - defined below
+void setContrastCallback(byte op, int value); // forward decl - defined below
 
-void menuCommandSetContrast()
-{
+void menuCommandSetContrast() {
   ui.displaySlider(1, 127, 1, display.getContrast(), "Set contrast", setContrastCallback);
 }
-void setContrastCallback(byte op, int value)
-{
-  switch (op)
-  {
-    case SLIDER_DISPLAY_VALUE_CHANGED: display.previewContrast((byte) value); break;
-    case SLIDER_DISPLAY_VALUE_SET:     display.setContrast((byte) value);     break;
-    case SLIDER_DISPLAY_CANCELED:      display.previewContrast(display.getContrast()); break;
+void setContrastCallback(byte op, int value) {
+  switch (op) {
+    case SLIDER_DISPLAY_VALUE_CHANGED:
+      display.previewContrast((byte) value);
+      break;
+    case SLIDER_DISPLAY_VALUE_SET:
+      display.setContrast((byte) value);
+      break;
+    case SLIDER_DISPLAY_CANCELED:
+      display.previewContrast(display.getContrast());
+      break;
   }
 }
 
-void setBacklightTimeoutCallback(byte op, int value);   // forward decl - defined below
+void setBacklightTimeoutCallback(byte op, int value); // forward decl - defined below
 
-void menuCommandSetBacklightTimeout()
-{
+void menuCommandSetBacklightTimeout() {
   ui.displaySlider(LCD_BACKLIGHT_TIMEOUT_MIN, LCD_BACKLIGHT_TIMEOUT_MAX, LCD_BACKLIGHT_TIMEOUT_STEP,
-                    display.getBacklightTimeout(), "Backlight s", setBacklightTimeoutCallback);
+                   display.getBacklightTimeout(), "Backlight s", setBacklightTimeoutCallback);
 }
-void setBacklightTimeoutCallback(byte op, int value)
-{
+void setBacklightTimeoutCallback(byte op, int value) {
   if (op == SLIDER_DISPLAY_VALUE_SET) {
     display.setBacklightTimeout((unsigned int) value);
   }
 }
-
 
 // ---------------------------------------------------------------------------------
 //                       Menu commands: battery calibration
@@ -526,7 +477,7 @@ void setBacklightTimeoutCallback(byte op, int value)
 //
 static float pendingCalibVoltageSnapshot = 0.0;
 
-void setBatteryCalibCallback(byte op, float value);   // forward decl - defined below
+void setBatteryCalibCallback(byte op, float value); // forward decl - defined below
 
 //
 // Battery voltage calibration - no programmer needed. The slider shows the
@@ -537,17 +488,14 @@ void setBatteryCalibCallback(byte op, float value);   // forward decl - defined 
 // rescales it proportionally rather than adding a fixed offset - see
 // setBatteryCalibCallback() below.
 //
-void menuCommandSetBatteryCalib()
-{
+void menuCommandSetBatteryCalib() {
   battery.read();
   pendingCalibVoltageSnapshot = battery.getVoltage();
   ui.displayFloatSlider(pendingCalibVoltageSnapshot - BATTERY_CALIBRATION_RANGE,
-                         pendingCalibVoltageSnapshot + BATTERY_CALIBRATION_RANGE,
-                         BATTERY_CALIBRATION_STEP, pendingCalibVoltageSnapshot,
-                         "Batt calib V", 1, setBatteryCalibCallback);
+                        pendingCalibVoltageSnapshot + BATTERY_CALIBRATION_RANGE, BATTERY_CALIBRATION_STEP,
+                        pendingCalibVoltageSnapshot, "Batt calib V", 1, setBatteryCalibCallback);
 }
-void setBatteryCalibCallback(byte op, float value)
-{
+void setBatteryCalibCallback(byte op, float value) {
   //
   // voltage = adcCount * voltsScalar, and adcCount hasn't changed since the
   // slider opened (same snapshot), so scaling voltsScalar by
@@ -558,7 +506,6 @@ void setBatteryCalibCallback(byte op, float value)
     battery.setScalar(battery.getScalar() * value / pendingCalibVoltageSnapshot);
   }
 }
-
 
 // ---------------------------------------------------------------------------------
 //                       Menu commands: battery charge curve
@@ -573,18 +520,16 @@ void setBatteryCalibCallback(byte op, float value)
 //
 static byte socCurveEditIndex = 0;
 
-void setSocCurveCallback(byte op, float value);   // forward decl - defined below
+void setSocCurveCallback(byte op, float value); // forward decl - defined below
 
-void editSocCurvePoint(byte index)
-{
+void editSocCurvePoint(byte index) {
   socCurveEditIndex = index;
   char title[16];
   sprintf(title, "%d%% Volts", batteryCharge.getSocPercentLabel(index));
   ui.displayFloatSlider(BATTERY_SOC_VOLTAGE_MIN, BATTERY_SOC_VOLTAGE_MAX, BATTERY_SOC_VOLTAGE_STEP,
-                         batteryCharge.getSocVoltage(index), title, 1, setSocCurveCallback);
+                        batteryCharge.getSocVoltage(index), title, 1, setSocCurveCallback);
 }
-void setSocCurveCallback(byte op, float value)
-{
+void setSocCurveCallback(byte op, float value) {
   if (op == SLIDER_DISPLAY_VALUE_SET) {
     batteryCharge.setSocVoltage(socCurveEditIndex, value);
   }
@@ -596,14 +541,132 @@ void setSocCurveCallback(byte op, float value)
 //
 static_assert(BATTERY_SOC_TABLE_SIZE == 7, "menuCommandSetSocXX wrappers below assume exactly 7 SOC breakpoints");
 
-void menuCommandSetSoc100() { editSocCurvePoint(0); }
-void menuCommandSetSoc80()  { editSocCurvePoint(1); }
-void menuCommandSetSoc60()  { editSocCurvePoint(2); }
-void menuCommandSetSoc40()  { editSocCurvePoint(3); }
-void menuCommandSetSoc20()  { editSocCurvePoint(4); }
-void menuCommandSetSoc10()  { editSocCurvePoint(5); }
-void menuCommandSetSoc0()   { editSocCurvePoint(6); }
+void menuCommandSetSoc100() {
+  editSocCurvePoint(0);
+}
+void menuCommandSetSoc80() {
+  editSocCurvePoint(1);
+}
+void menuCommandSetSoc60() {
+  editSocCurvePoint(2);
+}
+void menuCommandSetSoc40() {
+  editSocCurvePoint(3);
+}
+void menuCommandSetSoc20() {
+  editSocCurvePoint(4);
+}
+void menuCommandSetSoc10() {
+  editSocCurvePoint(5);
+}
+void menuCommandSetSoc0() {
+  editSocCurvePoint(6);
+}
 
+//
+// draw a connected line from (x0,y0) to (x1,y1), interpolating y across
+// every intermediate column and bridging each column to the previous one's
+// y - same technique Graph::draw() (graphs.h) uses for its adjacent data
+// points, generalized here since drawSocCurveView() below only has
+// BATTERY_SOC_TABLE_SIZE (7) points spread across the whole plot width,
+// not one close together per column.
+//
+void graphConnectPoints(int x0, int y0, int x1, int y1) {
+  int prevY = y0;
+  graphPlotColumn(x0, y0, y0);
+  for (int x = x0 + 1; x <= x1; x++) {
+    int y = y0 + (int) (((long) (y1 - y0) * (x - x0)) / (x1 - x0));
+    graphPlotColumn(x, min(y, prevY), max(y, prevY));
+    prevY = y;
+  }
+}
+
+//
+// Read-only visualization of the calibrated curve itself (not a live
+// reading): the BATTERY_SOC_TABLE_SIZE points plotted as percent (y axis,
+// fixed 0-100 - that IS the table's range, unlike a History graph's
+// autoscaled one) against voltage (x axis, autoscaled to the curve's own
+// 0%/100% points rather than the full BATTERY_SOC_VOLTAGE_MIN/MAX slider
+// range, for better resolution), connected point-to-point. The live battery
+// voltage is marked as a vertical reference line, drawn before the curve so
+// the curve stays fully visible where the two cross. Reuses the same plot
+// geometry and graphPlotColumn() primitive as the History graphs (graphs.h)
+// but isn't a Graph itself - Graph always plots a History time series,
+// where this plots BatteryCharge's 7 fixed calibration points instead.
+//
+void drawSocCurveView() {
+  ui.lcdClearDisplay();
+
+  float liveVoltage = battery.getVoltage();
+  char  voltBuf[6];
+  if (isnan(liveVoltage)) {
+    strcpy(voltBuf, "--");
+  } else {
+    dtostrf(liveVoltage, 1, 1, voltBuf);
+    strcat(voltBuf, "V");
+  }
+  printLabeledValue(0, "SOC curve", voltBuf, 5); // widest: "20.4V"
+
+  float vMin = batteryCharge.getSocVoltage(BATTERY_SOC_TABLE_SIZE - 1); // 0% point
+  float vMax = batteryCharge.getSocVoltage(0);                         // 100% point
+  if (vMax <= vMin) {
+    vMax = vMin + 0.1; // guard a degenerate/miscalibrated curve
+  }
+
+  //
+  // y-axis: fixed 0-100%
+  //
+  graphPlotColumn(PLOT_LEFT_X - 2, PLOT_TOP_ROW, PLOT_BOTTOM_ROW);
+  ui.lcdSetCursorXY(PLOT_LEFT_X - 4, PLOT_TOP_BANK);
+  ui.lcdPrintStringRightJustified("100", 4);
+  ui.lcdSetCursorXY(PLOT_LEFT_X - 4, PLOT_BOTTOM_BANK);
+  ui.lcdPrintStringRightJustified("0", 4);
+
+  //
+  // x-axis: voltage, autoscaled to the curve's own 0%/100% points
+  //
+  ui.lcdDrawRowOfPixels(PLOT_LEFT_X - 2, PLOT_RIGHT_X, X_AXIS_BANK, 0x01);
+  char loLabel[6], hiLabel[6];
+  dtostrf(vMin, 1, 1, loLabel);
+  dtostrf(vMax, 1, 1, hiLabel);
+  ui.lcdSetCursorXY(PLOT_LEFT_X - 2, X_AXIS_BANK);
+  ui.lcdPrintString(loLabel);
+  ui.lcdSetCursorXY(PLOT_RIGHT_X, X_AXIS_BANK);
+  ui.lcdPrintStringRightJustified(hiLabel, 0);
+
+  //
+  // live-voltage marker - drawn before the curve so the curve (drawn last,
+  // below) is never obscured where the two overlap
+  //
+  if (!isnan(liveVoltage)) {
+    float frac  = constrain((liveVoltage - vMin) / (vMax - vMin), 0.0, 1.0);
+    int   markX = PLOT_LEFT_X + (int) (frac * (PLOT_WIDTH - 1) + 0.5);
+    graphPlotColumn(markX, PLOT_TOP_ROW, PLOT_BOTTOM_ROW);
+  }
+
+  //
+  // connect the calibrated points left-to-right (0% -> 100%, lowest voltage
+  // to highest)
+  //
+  int prevX = -1, prevY = 0;
+  for (int i = BATTERY_SOC_TABLE_SIZE - 1; i >= 0; i--) {
+    float voltage = batteryCharge.getSocVoltage((byte) i);
+    byte  percent = batteryCharge.getSocPercentLabel((byte) i);
+    int   x       = PLOT_LEFT_X + (int) ((voltage - vMin) / (vMax - vMin) * (PLOT_WIDTH - 1) + 0.5);
+    int   y       = PLOT_BOTTOM_ROW - (int) (percent / 100.0 * (PLOT_HEIGHT - 1) + 0.5);
+    if (prevX >= 0) {
+      graphConnectPoints(prevX, prevY, x, y);
+    } else {
+      graphPlotColumn(x, y, y);
+    }
+    prevX = x;
+    prevY = y;
+  }
+
+  ui.drawButtonBar("", "Back");
+  while (ui.getButtonEvent() != BUTTON_ID_BACK + BUTTON_PUSHED_EVENT)
+    ;
+}
 
 // ---------------------------------------------------------------------------------
 //                       Menu commands: per-fan PID gains
@@ -614,19 +677,24 @@ void menuCommandSetSoc0()   { editSocCurvePoint(6); }
 // Menu-flow bookkeeping, not fan state, so it lives here rather than in
 // fans_controller.h.
 //
-enum PidGainId { PID_GAIN_KP_LEFT, PID_GAIN_KI_LEFT, PID_GAIN_KD_LEFT,
-                  PID_GAIN_KP_RIGHT, PID_GAIN_KI_RIGHT, PID_GAIN_KD_RIGHT };
+enum PidGainId
+{
+  PID_GAIN_KP_LEFT,
+  PID_GAIN_KI_LEFT,
+  PID_GAIN_KD_LEFT,
+  PID_GAIN_KP_RIGHT,
+  PID_GAIN_KI_RIGHT,
+  PID_GAIN_KD_RIGHT
+};
 static byte pidGainEditId = 0;
 
-void setPidGainCallback(byte op, float value);   // forward decl - defined below
+void setPidGainCallback(byte op, float value); // forward decl - defined below
 
-void editPidGain(byte id, char *label, float minV, float maxV, float step, float current)
-{
+void editPidGain(byte id, char *label, float minV, float maxV, float step, float current) {
   pidGainEditId = id;
   ui.displayFloatSlider(minV, maxV, step, current, label, 3, setPidGainCallback);
 }
-void setPidGainCallback(byte op, float value)
-{
+void setPidGainCallback(byte op, float value) {
   if (op != SLIDER_DISPLAY_VALUE_SET) {
     return;
   }
@@ -638,42 +706,46 @@ void setPidGainCallback(byte op, float value)
   //
   battery.read();
   float voltageNow = battery.getVoltage();
-  switch (pidGainEditId)
-  {
-    case PID_GAIN_KP_LEFT:  fanLeft.setKp(value, voltageNow);  break;
-    case PID_GAIN_KI_LEFT:  fanLeft.setKi(value, voltageNow);  break;
-    case PID_GAIN_KD_LEFT:  fanLeft.setKd(value, voltageNow);  break;
-    case PID_GAIN_KP_RIGHT: fanRight.setKp(value, voltageNow); break;
-    case PID_GAIN_KI_RIGHT: fanRight.setKi(value, voltageNow); break;
-    case PID_GAIN_KD_RIGHT: fanRight.setKd(value, voltageNow); break;
+  switch (pidGainEditId) {
+    case PID_GAIN_KP_LEFT:
+      PidFanLeft.setKp(value, voltageNow);
+      break;
+    case PID_GAIN_KI_LEFT:
+      PidFanLeft.setKi(value, voltageNow);
+      break;
+    case PID_GAIN_KD_LEFT:
+      PidFanLeft.setKd(value, voltageNow);
+      break;
+    case PID_GAIN_KP_RIGHT:
+      PidFanRight.setKp(value, voltageNow);
+      break;
+    case PID_GAIN_KI_RIGHT:
+      PidFanRight.setKi(value, voltageNow);
+      break;
+    case PID_GAIN_KD_RIGHT:
+      PidFanRight.setKd(value, voltageNow);
+      break;
   }
 }
 
-void menuCommandSetPidKpLeft()
-{
-  editPidGain(PID_GAIN_KP_LEFT, "Kp Left", FAN_PID_KP_MIN, FAN_PID_KP_MAX, FAN_PID_KP_STEP, fanLeft.getKp());
+void menuCommandSetPidKpLeft() {
+  editPidGain(PID_GAIN_KP_LEFT, "Kp Left", FAN_PID_KP_MIN, FAN_PID_KP_MAX, FAN_PID_KP_STEP, PidFanLeft.getKp());
 }
-void menuCommandSetPidKiLeft()
-{
-  editPidGain(PID_GAIN_KI_LEFT, "Ki Left", FAN_PID_KI_MIN, FAN_PID_KI_MAX, FAN_PID_KI_STEP, fanLeft.getKi());
+void menuCommandSetPidKiLeft() {
+  editPidGain(PID_GAIN_KI_LEFT, "Ki Left", FAN_PID_KI_MIN, FAN_PID_KI_MAX, FAN_PID_KI_STEP, PidFanLeft.getKi());
 }
-void menuCommandSetPidKdLeft()
-{
-  editPidGain(PID_GAIN_KD_LEFT, "Kd Left", FAN_PID_KD_MIN, FAN_PID_KD_MAX, FAN_PID_KD_STEP, fanLeft.getKd());
+void menuCommandSetPidKdLeft() {
+  editPidGain(PID_GAIN_KD_LEFT, "Kd Left", FAN_PID_KD_MIN, FAN_PID_KD_MAX, FAN_PID_KD_STEP, PidFanLeft.getKd());
 }
-void menuCommandSetPidKpRight()
-{
-  editPidGain(PID_GAIN_KP_RIGHT, "Kp Right", FAN_PID_KP_MIN, FAN_PID_KP_MAX, FAN_PID_KP_STEP, fanRight.getKp());
+void menuCommandSetPidKpRight() {
+  editPidGain(PID_GAIN_KP_RIGHT, "Kp Right", FAN_PID_KP_MIN, FAN_PID_KP_MAX, FAN_PID_KP_STEP, PidFanRight.getKp());
 }
-void menuCommandSetPidKiRight()
-{
-  editPidGain(PID_GAIN_KI_RIGHT, "Ki Right", FAN_PID_KI_MIN, FAN_PID_KI_MAX, FAN_PID_KI_STEP, fanRight.getKi());
+void menuCommandSetPidKiRight() {
+  editPidGain(PID_GAIN_KI_RIGHT, "Ki Right", FAN_PID_KI_MIN, FAN_PID_KI_MAX, FAN_PID_KI_STEP, PidFanRight.getKi());
 }
-void menuCommandSetPidKdRight()
-{
-  editPidGain(PID_GAIN_KD_RIGHT, "Kd Right", FAN_PID_KD_MIN, FAN_PID_KD_MAX, FAN_PID_KD_STEP, fanRight.getKd());
+void menuCommandSetPidKdRight() {
+  editPidGain(PID_GAIN_KD_RIGHT, "Kd Right", FAN_PID_KD_MIN, FAN_PID_KD_MAX, FAN_PID_KD_STEP, PidFanRight.getKd());
 }
-
 
 // ---------------------------------------------------------------------------------
 //                    Menu commands: PID autotune ("Tune Left"/"Tune Right")
@@ -694,8 +766,7 @@ void menuCommandSetPidKdRight()
 // near-duplicate sequences.
 //
 
-void autotuneFan(Fan &hwFan, FanPIDControl &pid, const char *label)
-{
+void autotuneFan(Fan &hwFan, PIDFanControl &pid, const char *label) {
   fanControl.stopAll();
 
   ui.lcdClearDisplay();
@@ -714,8 +785,8 @@ void autotuneFan(Fan &hwFan, FanPIDControl &pid, const char *label)
   // stallRpm ends up as the last non-zero reading, i.e. this fan's own
   // measured stall boundary - not a guessed constant.
   //
-  char stepMsg[17];
-  unsigned int rpmLow = 0;
+  char         stepMsg[17];
+  unsigned int rpmLow   = 0;
   unsigned int stallRpm = 0;
   for (int testPct = FAN_AUTOTUNE_LOW_PCT; testPct > 0; testPct -= 5) {
     sprintf(stepMsg, "Testing %d%%...", testPct);
@@ -727,7 +798,7 @@ void autotuneFan(Fan &hwFan, FanPIDControl &pid, const char *label)
       rpmLow = rpm;
     }
     if (rpm == 0) {
-        break;
+      break;
     }
     stallRpm = rpm;
   }
@@ -745,14 +816,13 @@ void autotuneFan(Fan &hwFan, FanPIDControl &pid, const char *label)
   fanControl.stopAll();
 
   float kp, ki, kd;
-  bool ok = FanPIDControl::computeAutotunePID(stallRpm, rpmLow, rpmHigh, kp, ki, kd);
+  bool  ok = PIDFanControl::computeAutotunePID(stallRpm, rpmLow, rpmHigh, kp, ki, kd);
 
   ui.lcdClearDisplay();
   ui.lcdSetCursorXY(LCD_WIDTH_IN_PIXELS / 2, 0);
 
   char line1[17], line2[17], line3[17];
-  if (ok)
-  {
+  if (ok) {
     //
     // record the live (resting - fans are stopped above) battery voltage as
     // the calibration reference for these gains AND the freshly-measured
@@ -760,8 +830,8 @@ void autotuneFan(Fan &hwFan, FanPIDControl &pid, const char *label)
     // FanPIDControl::isStalled() in fan_pid_control.h.
     //
     battery.read();
-    float voltageNow = battery.getVoltage();
-    pid.applyAutotuneResults(kp, ki, kd, stallRpm, rpmLow, rpmHigh, maxRpm, voltageNow);
+    AutotuneResult result = {kp, ki, kd, stallRpm, rpmLow, rpmHigh, maxRpm, battery.getVoltage()};
+    pid.applyAutotuneResults(result);
 
     ui.lcdPrintStringCentered("Tune OK", 0);
     char kpBuf[8], kiBuf[8];
@@ -770,9 +840,7 @@ void autotuneFan(Fan &hwFan, FanPIDControl &pid, const char *label)
     sprintf(line1, "Kp%s Ki%s", kpBuf, kiBuf);
     sprintf(line2, "Stall %u RPM", stallRpm);
     sprintf(line3, "Max %u RPM", maxRpm);
-  }
-  else
-  {
+  } else {
     ui.lcdPrintStringCentered("Tune FAILED", 0);
     strcpy(line1, "Check fan/wiring");
     line2[0] = '\0';
@@ -790,15 +858,12 @@ void autotuneFan(Fan &hwFan, FanPIDControl &pid, const char *label)
     ;
 }
 
-void menuCommandAutotuneLeft()
-{
-  autotuneFan(fanLeftHw, fanLeft, "Left");
+void menuCommandAutotuneLeft() {
+  autotuneFan(fanLeft, PidFanLeft, "Left");
 }
-void menuCommandAutotuneRight()
-{
-  autotuneFan(fanRightHw, fanRight, "Right");
+void menuCommandAutotuneRight() {
+  autotuneFan(fanRight, PidFanRight, "Right");
 }
-
 
 // ---------------------------------------------------------------------------------
 //                              Menu structure
@@ -817,81 +882,71 @@ extern MENU_ITEM pidTuningMenu[];
 // Main menu.  The 4th field of the header is NULL, which enables the "Back"
 // button so the user can leave the menu and return to the live status screen.
 //
-MENU_ITEM mainMenu[] = {
-  {MENU_ITEM_TYPE_MAIN_MENU_HEADER, "Fan Controller", NULL,                           NULL},
-  {MENU_ITEM_TYPE_SUB_MENU,         "Thresholds",     NULL,                           settingsMenu},
-  {MENU_ITEM_TYPE_SUB_MENU,         "Manual / test",  NULL,                           manualMenu},
-  {MENU_ITEM_TYPE_SUB_MENU,         "PID tuning",     NULL,                           pidTuningMenu},
-  {MENU_ITEM_TYPE_COMMAND,          "Set contrast",   menuCommandSetContrast,         NULL},
-  {MENU_ITEM_TYPE_COMMAND,          "Backlight s",    menuCommandSetBacklightTimeout, NULL},
-  {MENU_ITEM_TYPE_COMMAND,          "Batt calib",     menuCommandSetBatteryCalib,     NULL},
-  {MENU_ITEM_TYPE_SUB_MENU,         "Charge curve",   NULL,                           socCurveMenu},
-  {MENU_ITEM_TYPE_END_OF_MENU,      "",               NULL,                           NULL}
-};
+MENU_ITEM mainMenu[] = {{MENU_ITEM_TYPE_MAIN_MENU_HEADER, "Fan Controller", NULL, NULL},
+                        {MENU_ITEM_TYPE_SUB_MENU, "Thresholds", NULL, settingsMenu},
+                        {MENU_ITEM_TYPE_SUB_MENU, "Manual / test", NULL, manualMenu},
+                        {MENU_ITEM_TYPE_SUB_MENU, "PID tuning", NULL, pidTuningMenu},
+                        {MENU_ITEM_TYPE_COMMAND, "Set contrast", menuCommandSetContrast, NULL},
+                        {MENU_ITEM_TYPE_COMMAND, "Backlight s", menuCommandSetBacklightTimeout, NULL},
+                        {MENU_ITEM_TYPE_COMMAND, "Batt calib", menuCommandSetBatteryCalib, NULL},
+                        {MENU_ITEM_TYPE_SUB_MENU, "Charge curve", NULL, socCurveMenu},
+                        {MENU_ITEM_TYPE_END_OF_MENU, "", NULL, NULL}};
 
 //
 // Thresholds sub-menu - the four numbers that shape the control law
 //
-MENU_ITEM settingsMenu[] = {
-  {MENU_ITEM_TYPE_SUB_MENU_HEADER, "Thresholds",   NULL,                       mainMenu},
-  {MENU_ITEM_TYPE_COMMAND,         "Temp start C", menuCommandSetTempStart,    NULL},
-  {MENU_ITEM_TYPE_COMMAND,         "Temp high C",  menuCommandSetTempHigh,     NULL},
-  {MENU_ITEM_TYPE_COMMAND,         "Humid start%", menuCommandSetHumStart,     NULL},
-  {MENU_ITEM_TYPE_COMMAND,         "Humid high %", menuCommandSetHumHigh,      NULL},
-  {MENU_ITEM_TYPE_END_OF_MENU,     "",             NULL,                       NULL}
-};
+MENU_ITEM settingsMenu[] = {{MENU_ITEM_TYPE_SUB_MENU_HEADER, "Thresholds", NULL, mainMenu},
+                            {MENU_ITEM_TYPE_COMMAND, "Temp start C", menuCommandSetTempStart, NULL},
+                            {MENU_ITEM_TYPE_COMMAND, "Temp high C", menuCommandSetTempHigh, NULL},
+                            {MENU_ITEM_TYPE_COMMAND, "Humid start%", menuCommandSetHumStart, NULL},
+                            {MENU_ITEM_TYPE_COMMAND, "Humid high %", menuCommandSetHumHigh, NULL},
+                            {MENU_ITEM_TYPE_END_OF_MENU, "", NULL, NULL}};
 
 //
 // Manual / test sub-menu - override the automatic control for testing/servicing
 //
-MENU_ITEM manualMenu[] = {
-  {MENU_ITEM_TYPE_SUB_MENU_HEADER, "Manual / test", NULL,                       mainMenu},
-  {MENU_ITEM_TYPE_TOGGLE,          "Manual",        menuToggleManualCallback,   NULL},
-  {MENU_ITEM_TYPE_COMMAND,         "Fan speed %",   menuCommandSetManualSpeed,  NULL},
-  {MENU_ITEM_TYPE_END_OF_MENU,     "",              NULL,                       NULL}
-};
+MENU_ITEM manualMenu[] = {{MENU_ITEM_TYPE_SUB_MENU_HEADER, "Manual / test", NULL, mainMenu},
+                          {MENU_ITEM_TYPE_TOGGLE, "Manual", menuToggleManualCallback, NULL},
+                          {MENU_ITEM_TYPE_COMMAND, "Fan speed %", menuCommandSetManualSpeed, NULL},
+                          {MENU_ITEM_TYPE_END_OF_MENU, "", NULL, NULL}};
 
 //
 // Charge curve sub-menu - recalibrate the voltage for each of the battery's
-// fixed SOC percent points; see editSocCurvePoint() above
+// fixed SOC percent points; see editSocCurvePoint() above. "View curve"
+// draws the resulting curve instead of editing it - see drawSocCurveView().
 //
-MENU_ITEM socCurveMenu[] = {
-  {MENU_ITEM_TYPE_SUB_MENU_HEADER, "Charge curve", NULL,                 mainMenu},
-  {MENU_ITEM_TYPE_COMMAND,         "100%",         menuCommandSetSoc100, NULL},
-  {MENU_ITEM_TYPE_COMMAND,         "80%",          menuCommandSetSoc80,  NULL},
-  {MENU_ITEM_TYPE_COMMAND,         "60%",          menuCommandSetSoc60,  NULL},
-  {MENU_ITEM_TYPE_COMMAND,         "40%",          menuCommandSetSoc40,  NULL},
-  {MENU_ITEM_TYPE_COMMAND,         "20%",          menuCommandSetSoc20,  NULL},
-  {MENU_ITEM_TYPE_COMMAND,         "10%",          menuCommandSetSoc10,  NULL},
-  {MENU_ITEM_TYPE_COMMAND,         "0%",           menuCommandSetSoc0,   NULL},
-  {MENU_ITEM_TYPE_END_OF_MENU,     "",             NULL,                 NULL}
-};
+MENU_ITEM socCurveMenu[] = {{MENU_ITEM_TYPE_SUB_MENU_HEADER, "Charge curve", NULL, mainMenu},
+                            {MENU_ITEM_TYPE_COMMAND, "View curve", drawSocCurveView, NULL},
+                            {MENU_ITEM_TYPE_COMMAND, "100%", menuCommandSetSoc100, NULL},
+                            {MENU_ITEM_TYPE_COMMAND, "80%", menuCommandSetSoc80, NULL},
+                            {MENU_ITEM_TYPE_COMMAND, "60%", menuCommandSetSoc60, NULL},
+                            {MENU_ITEM_TYPE_COMMAND, "40%", menuCommandSetSoc40, NULL},
+                            {MENU_ITEM_TYPE_COMMAND, "20%", menuCommandSetSoc20, NULL},
+                            {MENU_ITEM_TYPE_COMMAND, "10%", menuCommandSetSoc10, NULL},
+                            {MENU_ITEM_TYPE_COMMAND, "0%", menuCommandSetSoc0, NULL},
+                            {MENU_ITEM_TYPE_END_OF_MENU, "", NULL, NULL}};
 
 //
 // PID tuning sub-menu - independent Kp/Ki/Kd for each fan, plus a one-shot
 // autotune trigger per fan; see autotuneFan() above for what "Tune
 // Left"/"Tune Right" actually do.
 //
-MENU_ITEM pidTuningMenu[] = {
-  {MENU_ITEM_TYPE_SUB_MENU_HEADER, "PID tuning", NULL,                     mainMenu},
-  {MENU_ITEM_TYPE_COMMAND,         "Kp Left",    menuCommandSetPidKpLeft,  NULL},
-  {MENU_ITEM_TYPE_COMMAND,         "Ki Left",    menuCommandSetPidKiLeft,  NULL},
-  {MENU_ITEM_TYPE_COMMAND,         "Kd Left",    menuCommandSetPidKdLeft,  NULL},
-  {MENU_ITEM_TYPE_COMMAND,         "Tune Left",  menuCommandAutotuneLeft,  NULL},
-  {MENU_ITEM_TYPE_COMMAND,         "Kp Right",   menuCommandSetPidKpRight, NULL},
-  {MENU_ITEM_TYPE_COMMAND,         "Ki Right",   menuCommandSetPidKiRight, NULL},
-  {MENU_ITEM_TYPE_COMMAND,         "Kd Right",   menuCommandSetPidKdRight, NULL},
-  {MENU_ITEM_TYPE_COMMAND,         "Tune Right", menuCommandAutotuneRight, NULL},
-  {MENU_ITEM_TYPE_END_OF_MENU,     "",           NULL,                    NULL}
-};
-
+MENU_ITEM pidTuningMenu[] = {{MENU_ITEM_TYPE_SUB_MENU_HEADER, "PID tuning", NULL, mainMenu},
+                             {MENU_ITEM_TYPE_COMMAND, "Kp Left", menuCommandSetPidKpLeft, NULL},
+                             {MENU_ITEM_TYPE_COMMAND, "Ki Left", menuCommandSetPidKiLeft, NULL},
+                             {MENU_ITEM_TYPE_COMMAND, "Kd Left", menuCommandSetPidKdLeft, NULL},
+                             {MENU_ITEM_TYPE_COMMAND, "Tune Left", menuCommandAutotuneLeft, NULL},
+                             {MENU_ITEM_TYPE_COMMAND, "Kp Right", menuCommandSetPidKpRight, NULL},
+                             {MENU_ITEM_TYPE_COMMAND, "Ki Right", menuCommandSetPidKiRight, NULL},
+                             {MENU_ITEM_TYPE_COMMAND, "Kd Right", menuCommandSetPidKdRight, NULL},
+                             {MENU_ITEM_TYPE_COMMAND, "Tune Right", menuCommandAutotuneRight, NULL},
+                             {MENU_ITEM_TYPE_END_OF_MENU, "", NULL, NULL}};
 
 // ---------------------------------------------------------------------------------
 //                                    Setup
 // ---------------------------------------------------------------------------------
 
-void setup()
-{
+void setup() {
   Serial.begin(9600);
 
   //
@@ -902,12 +957,11 @@ void setup()
   // fanControl (fans_controller.h) never touches init() itself, since it
   // only ever orchestrates the pair, not their bring-up.
   //
-  fanLeft.init();
-  fanRight.init();
+  PidFanLeft.init();
+  PidFanRight.init();
 
   sensor.init();
-  ui.connectToPins(LCD_CLOCK_PIN, LCD_DATA_IN_PIN, LCD_DATA_CONTROL_PIN,
-                   LCD_CHIP_ENABLE_PIN, LCD_BUTTONS_PIN);
+  ui.connectToPins(LCD_CLOCK_PIN, LCD_DATA_IN_PIN, LCD_DATA_CONTROL_PIN, LCD_CHIP_ENABLE_PIN, LCD_BUTTONS_PIN);
   display.init();
   controlLoop.init();
   battery.init();
@@ -919,7 +973,6 @@ void setup()
   controlLoop.service();
 }
 
-
 // ---------------------------------------------------------------------------------
 //                                  Main loop
 // ---------------------------------------------------------------------------------
@@ -930,13 +983,11 @@ void setup()
 // here.  The fan control law keeps running the whole time the status screen is
 // shown.
 //
-void loop()
-{
-  drawMainScreen(true);   // true = full redraw (clear + button bar)
+void loop() {
+  drawMainScreen(true); // true = full redraw (clear + button bar)
 
   unsigned long lastDraw = millis();
-  while (true)
-  {
+  while (true) {
     //
     // keep the fans regulated
     //
@@ -945,8 +996,7 @@ void loop()
     //
     // refresh the readout twice a second
     //
-    if (millis() - lastDraw >= 500)
-    {
+    if (millis() - lastDraw >= 500) {
       lastDraw = millis();
       drawMainScreen(false);
     }
@@ -958,8 +1008,7 @@ void loop()
     // the Back button opens the configuration menu, regardless of which
     // main screen is currently showing
     //
-    if (ev == BUTTON_ID_BACK + BUTTON_PUSHED_EVENT)
-    {
+    if (ev == BUTTON_ID_BACK + BUTTON_PUSHED_EVENT) {
       ui.displayAndExecuteMenu(mainMenu);
       //
       // button activity while the menu itself is open isn't visible to
@@ -970,14 +1019,13 @@ void loop()
       // instant the status screen reappears
       //
       display.backlightNoteActivity();
-      return;                        // redraw the status screen from loop()
+      return; // redraw the status screen from loop()
     }
 
     //
     // the Select button (bottom-left) cycles to the next main screen
     //
-    if (ev == BUTTON_ID_SELECT + BUTTON_PUSHED_EVENT)
-    {
+    if (ev == BUTTON_ID_SELECT + BUTTON_PUSHED_EVENT) {
       mainScreenIndex = (mainScreenIndex + 1) % NUM_MAIN_SCREENS;
       drawMainScreen(true);
       lastDraw = millis();
